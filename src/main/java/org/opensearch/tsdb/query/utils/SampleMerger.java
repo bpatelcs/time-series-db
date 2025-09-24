@@ -1,0 +1,226 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
+ */
+package org.opensearch.tsdb.query.utils;
+
+import org.opensearch.tsdb.core.model.FloatSample;
+import org.opensearch.tsdb.core.model.Sample;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Utility class for merging time series samples efficiently.
+ *
+ * <p>This class provides optimized methods for merging time series samples from different
+ * sources, handling duplicate timestamps according to configurable policies, and ensuring
+ * proper sorting of the merged results.</p>
+ *
+ * <h2>Merge Policies:</h2>
+ * <ul>
+ *   <li><strong>ANY_WINS:</strong> Keep the sample that comes later in function execution order (not largest timestamp) when duplicates are found (default)</li>
+ *   <li><strong>SUM_VALUES:</strong> Sum the values of duplicate samples</li>
+ * </ul>
+ *
+ * <h3>Performance Optimizations:</h3>
+ * <ul>
+ *   <li><strong>Merge Sort:</strong> Uses O(n+m) merge sort when inputs are sorted</li>
+ *   <li><strong>Hash-based Merging:</strong> Uses O(n+m) hash map approach for unsorted inputs</li>
+ *   <li><strong>Multiple List Merging:</strong> Efficiently handles merging of multiple sample lists</li>
+ * </ul>
+ *
+ * <h3>Usage Examples:</h3>
+ * <pre>{@code
+ * // Create merger with default policy (ANY_WINS)
+ * SampleMerger merger = new SampleMerger();
+ *
+ * // Merge two sorted sample lists (assumeSorted=true because inputs are actually sorted)
+ * List<Sample> merged = merger.merge(sortedSamples1, sortedSamples2, true);
+ *
+ * // Merge unsorted lists (assumeSorted=false because inputs are not sorted)
+ * SampleMerger sumMerger = new SampleMerger(DeduplicatePolicy.SUM_VALUES);
+ * List<Sample> summed = sumMerger.merge(unsortedSamples1, unsortedSamples2, false);
+ *
+ * }</pre>
+ *
+ * <h3>Thread Safety:</h3>
+ * <p>This class is thread-safe for read operations. Multiple threads can safely
+ * call merge methods concurrently. However, the returned lists are not thread-safe
+ * and should not be modified concurrently.</p>
+ */
+public class SampleMerger {
+
+    /**
+     * Policy for handling duplicate timestamps during merge.
+     */
+    public enum DeduplicatePolicy {
+        /**
+         * Any write wins - keep the sample that comes later in function execution order (not largest timestamp).
+         * This is the default policy and provides the best performance.
+         */
+        ANY_WINS,
+
+        /**
+         * Sum the values of duplicate samples.
+         * This policy is useful for aggregating metrics from multiple sources.
+         */
+        SUM_VALUES
+    }
+
+    private final DeduplicatePolicy deduplicatePolicy;
+
+    /**
+     * Create a SampleMerger with the default deduplicate policy (ANY_WINS).
+     */
+    public SampleMerger() {
+        this(DeduplicatePolicy.ANY_WINS);
+    }
+
+    /**
+     * Create a SampleMerger with the specified deduplicate policy.
+     *
+     * @param deduplicatePolicy Policy for handling duplicate timestamps
+     */
+    public SampleMerger(DeduplicatePolicy deduplicatePolicy) {
+        this.deduplicatePolicy = deduplicatePolicy;
+    }
+
+    /**
+     * Merge two sample lists efficiently.
+     *
+     * <p>This method automatically chooses the best merging strategy based on whether
+     * the input lists are sorted. If both lists are sorted, it uses merge sort.
+     * Otherwise, it falls back to hash-based merging with sorting.</p>
+     *
+     * <p><strong>IMPORTANT:</strong> The caller must ensure that {@code assumeSorted}
+     * accurately reflects the actual sort order of the input lists. Incorrectly
+     * setting this parameter will result in incorrect merge results and poor performance.</p>
+     *
+     * @param samples1 First list of samples
+     * @param samples2 Second list of samples
+     * @param assumeSorted If true, assumes both input lists are sorted by timestamp.
+     *                     <strong>Must match the actual sort order of inputs.</strong>
+     * @return Merged and sorted list of samples
+     */
+    public List<Sample> merge(List<Sample> samples1, List<Sample> samples2, boolean assumeSorted) {
+        if (samples1.isEmpty()) {
+            return new ArrayList<>(samples2);
+        }
+        if (samples2.isEmpty()) {
+            return new ArrayList<>(samples1);
+        }
+
+        if (assumeSorted) {
+            return mergeSorted(samples1, samples2);
+        } else {
+            return mergeUnsorted(samples1, samples2);
+        }
+    }
+
+    /**
+     * Merge sorted sample lists using merge sort algorithm.
+     *
+     * <p>This method is optimized for when both input lists are already sorted.
+     * It provides O(n+m) time complexity and is the most efficient merging
+     * strategy for sorted inputs.</p>
+     *
+     * @param samples1 First sorted list of samples
+     * @param samples2 Second sorted list of samples
+     * @return Merged and sorted list of samples
+     */
+    private List<Sample> mergeSorted(List<Sample> samples1, List<Sample> samples2) {
+        List<Sample> result = new ArrayList<>(samples1.size() + samples2.size());
+
+        int i = 0, j = 0;
+
+        while (i < samples1.size() && j < samples2.size()) {
+            Sample s1 = samples1.get(i);
+            Sample s2 = samples2.get(j);
+
+            if (s1.getTimestamp() < s2.getTimestamp()) {
+                result.add(s1);
+                i++;
+            } else if (s1.getTimestamp() > s2.getTimestamp()) {
+                result.add(s2);
+                j++;
+            } else {
+                // Duplicate timestamps - handle according to policy
+                Sample merged = mergeDuplicateSamples(s1, s2);
+                result.add(merged);
+                i++;
+                j++;
+            }
+        }
+
+        // Add remaining samples
+        while (i < samples1.size()) {
+            result.add(samples1.get(i));
+            i++;
+        }
+        while (j < samples2.size()) {
+            result.add(samples2.get(j));
+            j++;
+        }
+
+        return result;
+    }
+
+    /**
+     * Merge unsorted sample lists using hash map.
+     *
+     * <p>This method uses a hash map to efficiently handle unsorted inputs
+     * and duplicate timestamps. It provides O(n+m) time complexity with
+     * higher constants than the sorted merge approach.</p>
+     *
+     * @param samples1 First list of samples
+     * @param samples2 Second list of samples
+     * @return Merged and sorted list of samples
+     */
+    private List<Sample> mergeUnsorted(List<Sample> samples1, List<Sample> samples2) {
+        Map<Long, Sample> timestampToSample = new HashMap<>(Math.max(samples1.size(), samples2.size()));
+
+        // Add samples from first list
+        for (Sample sample : samples1) {
+            timestampToSample.merge(sample.getTimestamp(), sample, this::mergeDuplicateSamples);
+        }
+
+        // Add samples from second list
+        for (Sample sample : samples2) {
+            timestampToSample.merge(sample.getTimestamp(), sample, this::mergeDuplicateSamples);
+        }
+
+        List<Sample> result = new ArrayList<>(timestampToSample.values());
+        result.sort(Comparator.comparingLong(Sample::getTimestamp));
+        return result;
+    }
+
+    /**
+     * Merge two samples with the same timestamp according to the deduplicate policy.
+     *
+     * @param existing The existing sample
+     * @param newSample The new sample to merge
+     * @return The merged sample
+     */
+    private Sample mergeDuplicateSamples(Sample existing, Sample newSample) {
+        switch (deduplicatePolicy) {
+            case SUM_VALUES:
+                if (existing instanceof FloatSample existingFloat && newSample instanceof FloatSample newFloat) {
+                    double sum = existingFloat.getValue() + newFloat.getValue();
+                    return new FloatSample(existing.getTimestamp(), sum);
+                } else {
+                    // Fallback to ANY_WINS for non-float samples
+                    return newSample;
+                }
+            default: // ANY_WINS
+                return newSample;  // Any write wins - keep the sample that comes later in function execution order
+        }
+    }
+
+}

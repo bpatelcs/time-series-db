@@ -122,6 +122,11 @@ public class XORIterator implements ChunkIterator {
         return error;
     }
 
+    @Override
+    public int totalSamples() {
+        return totalSamples;
+    }
+
     /**
      * Read a value with decompression
      */
