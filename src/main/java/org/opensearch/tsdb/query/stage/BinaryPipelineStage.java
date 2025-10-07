@@ -17,6 +17,8 @@ import java.util.List;
  * <p>Binary pipeline stages perform operations between two time series, such as
  * mathematical operations, comparisons, and set operations. They require two
  * inputs (left and right operands) and produce a single output.</p>
+ *
+ * <p>Note that binary pipeline stages can modify the input time series lists.</p>
  */
 public interface BinaryPipelineStage extends PipelineStage {
 
@@ -28,8 +30,8 @@ public interface BinaryPipelineStage extends PipelineStage {
     /**
      * Process two time series inputs and return the result.
      *
-     * @param left The left operand time series
-     * @param right The right operand time series
+     * @param left The left operand time series. This must be a mutable list.
+     * @param right The right operand time series. This must be a mutable list.
      * @return The result time series
      */
     List<TimeSeries> process(List<TimeSeries> left, List<TimeSeries> right);
