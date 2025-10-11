@@ -441,6 +441,12 @@ public class TimeshiftStageTests extends OpenSearchTestCase {
         );
     }
 
+    public void testIsGlobalAggregation() {
+        // Test the isGlobalAggregation method inherited from AbstractMapperStage
+        TimeshiftStage stage = new TimeshiftStage(TimeValue.timeValueHours(1).getMillis());
+        assertFalse("Mapper stages should not be global aggregations", stage.isGlobalAggregation());
+    }
+
     // Helper methods for creating mock providers
     private TimeSeriesProvider createMockTimeSeriesProvider(String name) {
         return new TimeSeriesProvider() {

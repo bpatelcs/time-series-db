@@ -16,10 +16,8 @@ import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Sample;
 import org.opensearch.tsdb.query.aggregator.TimeSeries;
 import org.opensearch.tsdb.query.stage.PipelineStageAnnotation;
-import org.opensearch.tsdb.query.stage.UnaryPipelineStage;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -28,8 +26,8 @@ import java.util.Map;
  * This implements the 'timeshift amount+unit' command from M3QL.
  *
  * <p>This stage shifts all timestamps forward in the time series by the specified amount (in milliseconds)
- * while preserving the original values. It implements {@link UnaryPipelineStage} to
- * process a single input time series.</p>
+ * while preserving the original values. It extends {@link AbstractMapperStage} to
+ * process each data point independently.</p>
  *
  * <h2>Time Shifting Operations:</h2>
  * <ul>
@@ -62,7 +60,7 @@ import java.util.Map;
  * @since 0.0.1
  */
 @PipelineStageAnnotation(name = "timeshift")
-public class TimeshiftStage implements UnaryPipelineStage {
+public class TimeshiftStage extends AbstractMapperStage {
     /** The name identifier for this pipeline stage type. */
     public static final String NAME = "timeshift";
 
@@ -87,42 +85,41 @@ public class TimeshiftStage implements UnaryPipelineStage {
         }
     }
 
+    /**
+     * Map a single sample by shifting its timestamp forward by the specified amount.
+     *
+     * @param sample The original sample to transform
+     * @return A new sample with shifted timestamp but same value
+     */
     @Override
-    public List<TimeSeries> process(List<TimeSeries> input) {
-        if (input == null) {
-            throw new NullPointerException("Input cannot be null");
-        }
+    protected Sample mapSample(Sample sample) {
+        long originalTimestamp = sample.getTimestamp();
+        long shiftedTimestamp = originalTimestamp + shiftMillis;
+        double value = sample.getValue();
 
-        List<TimeSeries> result = new ArrayList<>();
-        // Always move forwards in time, regardless of sign
-        // Note: shiftMillis is guaranteed to be safe due to constructor validation
+        // Create new sample with shifted timestamp but same value
+        return new FloatSample(shiftedTimestamp, value);
+    }
 
-        for (TimeSeries series : input) {
-            List<Sample> shiftedSamples = new ArrayList<>();
-
-            for (Sample sample : series.getSamples()) {
-                long originalTimestamp = sample.getTimestamp();
-                long shiftedTimestamp = originalTimestamp + shiftMillis;
-                double value = sample.getValue();
-
-                // Create new sample with shifted timestamp but same value
-                shiftedSamples.add(new FloatSample(shiftedTimestamp, value));
-            }
-
-            // Create new time series with shifted samples, preserving all metadata
-            result.add(
-                new TimeSeries(
-                    shiftedSamples,
-                    series.getLabels(),
-                    series.getMinTimestamp() + shiftMillis,
-                    series.getMaxTimestamp() + shiftMillis,
-                    series.getStep(),
-                    series.getAlias()
-                )
-            );
-        }
-
-        return result;
+    /**
+     * Create a new time series with shifted samples and updated timestamp metadata.
+     * This method overrides the default implementation to update min/max timestamps.
+     *
+     * @param mappedSamples The list of samples with shifted timestamps
+     * @param originalSeries The original time series
+     * @return A new time series with shifted samples and updated metadata
+     */
+    @Override
+    protected TimeSeries createMappedTimeSeries(List<Sample> mappedSamples, TimeSeries originalSeries) {
+        // Create new time series with shifted samples, preserving all metadata except timestamps
+        return new TimeSeries(
+            mappedSamples,
+            originalSeries.getLabels(),
+            originalSeries.getMinTimestamp() + shiftMillis,
+            originalSeries.getMaxTimestamp() + shiftMillis,
+            originalSeries.getStep(),
+            originalSeries.getAlias()
+        );
     }
 
     @Override
@@ -197,10 +194,4 @@ public class TimeshiftStage implements UnaryPipelineStage {
 
         return new TimeshiftStage(shiftMillis);
     }
-
-    @Override
-    public boolean supportConcurrentSegmentSearch() {
-        return true;
-    }
-
 }
