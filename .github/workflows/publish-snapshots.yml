@@ -1,0 +1,36 @@
+name: Publish snapshots to maven
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - '[0-9]+.[0-9]+'
+      - '[0-9]+.x'
+
+jobs:
+  build-and-publish-snapshots:
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: write
+
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin # Temurin is a distribution of adoptium
+          java-version: 21
+      - uses: actions/checkout@v4
+      - name: Load secrets
+        uses: 1password/load-secrets-action@v3
+        with:
+          # Export loaded secrets as environment variables
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          SONATYPE_USERNAME: op://opensearch-infra-secrets/maven-central-portal-credentials/username
+          SONATYPE_PASSWORD: op://opensearch-infra-secrets/maven-central-portal-credentials/password
+      - name: Publish snapshots to maven
+        run: |
+          ./gradlew publishPluginZipPublicationToSnapshotsRepository
