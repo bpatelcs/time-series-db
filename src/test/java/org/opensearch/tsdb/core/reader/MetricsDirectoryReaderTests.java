@@ -1,0 +1,799 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
+ */
+package org.opensearch.tsdb.core.reader;
+
+import org.apache.lucene.analysis.core.WhitespaceAnalyzer;
+import org.apache.lucene.document.BinaryDocValuesField;
+import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
+import org.apache.lucene.document.LongPoint;
+import org.apache.lucene.document.NumericDocValuesField;
+import org.apache.lucene.document.StringField;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.ReaderManager;
+import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.MatchAllDocsQuery;
+import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.store.ByteBuffersDirectory;
+import org.apache.lucene.store.Directory;
+import org.opensearch.common.SuppressForbidden;
+import org.opensearch.test.OpenSearchTestCase;
+import org.opensearch.tsdb.core.chunk.ChunkAppender;
+import org.opensearch.tsdb.core.chunk.XORChunk;
+import org.opensearch.tsdb.core.head.MemChunk;
+import org.opensearch.tsdb.core.index.closed.ClosedChunkIndexIO;
+import org.opensearch.tsdb.core.index.closed.ClosedChunkIndexManager;
+import org.opensearch.tsdb.core.index.live.MemChunkReader;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+import org.opensearch.tsdb.core.mapping.Constants;
+
+import java.io.IOException;
+import java.io.UnsupportedEncodingException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+/**
+ * Unit tests for MetricsDirectoryReader
+ */
+@SuppressForbidden(reason = "reference counting is required here")
+public class MetricsDirectoryReaderTests extends OpenSearchTestCase {
+
+    private Directory liveDirectory;
+    private Directory closedDirectory1;
+    private Directory closedDirectory2;
+    private Directory closedDirectory3;
+    private IndexWriter liveWriter;
+    private DirectoryReader liveReader;
+    private DirectoryReader closedReader1;
+    private DirectoryReader closedReader2;
+    private DirectoryReader closedReader3;
+    private MetricsDirectoryReader metricsReader;
+    private ClosedChunkIndexManager closedChunkIndexManager;
+    private MemChunkReader memChunkReader;
+    private ReaderManager closedReaderManager1;
+    private ReaderManager closedReaderManager2;
+    private ReaderManager closedReaderManager3;
+    private Map<Long, List<MemChunk>> referenceToMemChunkMap;
+
+    @Before
+    public void setUp() throws Exception {
+        super.setUp();
+        // Create test directories and readers using ByteBuffersDirectory (modern replacement for RAMDirectory)
+        liveDirectory = new ByteBuffersDirectory();
+        closedDirectory1 = new ByteBuffersDirectory();
+        closedDirectory2 = new ByteBuffersDirectory();
+        closedDirectory3 = new ByteBuffersDirectory();
+        closedChunkIndexManager = mock(ClosedChunkIndexManager.class);
+
+        // Initialize memChunks list for testing
+        referenceToMemChunkMap = this.getMemChunksForLiveIndex();
+        memChunkReader = (reference) -> {
+            return referenceToMemChunkMap.getOrDefault(reference, new ArrayList<>())
+                .stream()
+                .map(MemChunk::getChunk)
+                .filter(chunk -> chunk != null)
+                .collect(Collectors.toList());
+        };
+
+        // Create some test documents for live index (similar to LiveSeriesIndex)
+        liveWriter = new IndexWriter(liveDirectory, new IndexWriterConfig(new WhitespaceAnalyzer()));
+
+        liveWriter.addDocument(getLiveDoc("service=api,env=prod", 1001L, 1000000L, 1999999L));
+        liveWriter.addDocument(getLiveDoc("service=db,env=prod", 1002L, 2000000L, 2999999L)); // duplicate chunk exist in cci , assuming
+                                                                                              // that this chunk is already mmaped
+        liveWriter.commit();
+
+        // Create test documents for first closed index (similar to ClosedChunkIndex)
+        IndexWriter closedWriter1 = new IndexWriter(closedDirectory1, new IndexWriterConfig(new WhitespaceAnalyzer()));
+
+        closedWriter1.addDocument(getClosedDoc("service=api,env=prod", 1000000L, 1999999L));
+        closedWriter1.addDocument(getClosedDoc("service=db,env=prod", 2000000L, 2999999L));
+        closedWriter1.commit();
+        closedWriter1.close();
+
+        // Create test documents for second closed index
+        IndexWriter closedWriter2 = new IndexWriter(closedDirectory2, new IndexWriterConfig(new WhitespaceAnalyzer()));
+
+        closedWriter2.addDocument(getClosedDoc("service=api,env=prod", 3000000L, 3999999L));
+        closedWriter2.addDocument(getClosedDoc("service=cache,env=prod", 4000000L, 4999999L));
+        closedWriter2.commit();
+        closedWriter2.close();
+
+        // Create test documents for third closed index
+        IndexWriter closedWriter3 = new IndexWriter(closedDirectory3, new IndexWriterConfig(new WhitespaceAnalyzer()));
+
+        closedWriter3.addDocument(getClosedDoc("service=db,env=prod", 5000000L, 5999999L));
+        closedWriter3.addDocument(getClosedDoc("service=auth,env=prod", 6000000L, 6999999L));
+        closedWriter3.addDocument(getClosedDoc("service=api,env=prod", 7000000L, 7999999L));
+        closedWriter3.commit();
+        closedWriter3.close();
+
+        // Open readers
+        liveReader = DirectoryReader.open(liveWriter); // Create reader from IndexWriter for live updates
+        closedReader1 = DirectoryReader.open(closedDirectory1);
+        closedReader2 = DirectoryReader.open(closedDirectory2);
+        closedReader3 = DirectoryReader.open(closedDirectory3);
+
+        // Create ReaderManagers for closed readers
+        closedReaderManager1 = new ReaderManager(closedReader1);
+        closedReaderManager2 = new ReaderManager(closedReader2);
+        closedReaderManager3 = new ReaderManager(closedReader3);
+    }
+
+    @After
+    public void tearDown() throws Exception {
+        if (metricsReader != null) {
+            metricsReader.close();
+        }
+        if (liveWriter != null) {
+            liveWriter.close();
+        }
+        if (liveReader != null) {
+            liveReader.close();
+        }
+        if (closedReader1 != null) {
+            closedReader1.close();
+        }
+        if (closedReader2 != null) {
+            closedReader2.close();
+        }
+        if (closedReader3 != null) {
+            closedReader3.close();
+        }
+        if (liveDirectory != null) {
+            liveDirectory.close();
+        }
+        if (closedDirectory1 != null) {
+            closedDirectory1.close();
+        }
+        if (closedDirectory2 != null) {
+            closedDirectory2.close();
+        }
+        if (closedDirectory3 != null) {
+            closedDirectory3.close();
+        }
+        // Note: ReaderManagers are closed automatically when their underlying readers are closed
+        // We don't need to explicitly close them to avoid AlreadyClosedException
+        super.tearDown();
+    }
+
+    @Test
+    public void testConstructorWithSingleClosedReader() throws IOException {
+        int initialLiveRefCount = liveReader.getRefCount();
+        int initialClosedRefCount = closedReader1.getRefCount();
+
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1), memChunkReader);
+
+        // Reference counts should be incremented by the constructor
+        assertEquals("Live reader reference count should be incremented by 1", initialLiveRefCount + 1, liveReader.getRefCount());
+        assertEquals("Closed reader reference count should be incremented by 1", initialClosedRefCount + 1, closedReader1.getRefCount());
+        assertEquals("Should have 1 closed chunk reader", 1, metricsReader.getClosedChunkReadersCount());
+    }
+
+    @Test
+    public void testConstructorWithMultipleClosedReaders() throws IOException {
+        int initialLiveRefCount = liveReader.getRefCount();
+        int initialClosed1RefCount = closedReader1.getRefCount();
+        int initialClosed2RefCount = closedReader2.getRefCount();
+        int initialClosed3RefCount = closedReader3.getRefCount();
+
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2, closedReader3), memChunkReader);
+
+        // Reference counts should be incremented by the constructor
+        assertEquals("Live reader reference count should be incremented by 1", initialLiveRefCount + 1, liveReader.getRefCount());
+        assertEquals(
+            "First closed reader reference count should be incremented by 1",
+            initialClosed1RefCount + 1,
+            closedReader1.getRefCount()
+        );
+        assertEquals(
+            "Second closed reader reference count should be incremented by 1",
+            initialClosed2RefCount + 1,
+            closedReader2.getRefCount()
+        );
+        assertEquals(
+            "Third closed reader reference count should be incremented by 1",
+            initialClosed3RefCount + 1,
+            closedReader3.getRefCount()
+        );
+        assertEquals("Should have 3 closed chunk readers", 3, metricsReader.getClosedChunkReadersCount());
+    }
+
+    @Test
+    public void testLeavesCombination() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2, closedReader3), memChunkReader);
+
+        // Get expected leaf count
+        int expectedLiveLeaves = liveReader.leaves().size();
+        int expectedClosed1Leaves = closedReader1.leaves().size();
+        int expectedClosed2Leaves = closedReader2.leaves().size();
+        int expectedClosed3Leaves = closedReader3.leaves().size();
+        int expectedTotalLeaves = expectedLiveLeaves + expectedClosed1Leaves + expectedClosed2Leaves + expectedClosed3Leaves;
+
+        List<LeafReaderContext> actualLeaves = metricsReader.leaves();
+
+        assertEquals("Combined leaves should equal sum of all readers", expectedTotalLeaves, actualLeaves.size());
+    }
+
+    @Test
+    public void testMaxDocCombination() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2, closedReader3), memChunkReader);
+
+        int expectedMaxDoc = liveReader.maxDoc() + closedReader1.maxDoc() + closedReader2.maxDoc() + closedReader3.maxDoc();
+        int actualMaxDoc = metricsReader.maxDoc();
+
+        assertEquals("MaxDoc should be sum of all readers", expectedMaxDoc, actualMaxDoc);
+    }
+
+    @Test
+    public void testNumDocsCombination() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2, closedReader3), memChunkReader);
+
+        int expectedNumDocs = liveReader.numDocs() + closedReader1.numDocs() + closedReader2.numDocs() + closedReader3.numDocs();
+        int actualNumDocs = metricsReader.numDocs();
+
+        assertEquals("NumDocs should be sum of all readers", expectedNumDocs, actualNumDocs);
+    }
+
+    @Test
+    public void testVersionCombination() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2, closedReader3), memChunkReader);
+
+        // With the new versioning system, MetricsDirectoryReader uses its own version counter
+        // Default constructor without version parameter should initialize to 0
+        long actualVersion = metricsReader.getVersion();
+        assertEquals("Version should be 0 for default constructor", 0L, actualVersion);
+
+        // Test with explicit version
+        MetricsDirectoryReader versionedReader = new MetricsDirectoryReader(
+            liveReader,
+            Arrays.asList(closedReader1, closedReader2, closedReader3),
+            memChunkReader,
+            5L
+        );
+        assertEquals("Version should match constructor parameter", 5L, versionedReader.getVersion());
+        versionedReader.close();
+    }
+
+    @Test
+    public void testIsCurrentCombination() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2, closedReader3), memChunkReader);
+
+        boolean expectedIsCurrent = liveReader.isCurrent()
+            && closedReader1.isCurrent()
+            && closedReader2.isCurrent()
+            && closedReader3.isCurrent();
+        boolean actualIsCurrent = metricsReader.isCurrent();
+
+        assertEquals("IsCurrent should be AND of all readers", expectedIsCurrent, actualIsCurrent);
+    }
+
+    @Test
+    public void testReferenceCountingOperations() throws IOException {
+        int initialLiveRefCount = liveReader.getRefCount();
+        int initialClosed1RefCount = closedReader1.getRefCount();
+        int initialClosed2RefCount = closedReader2.getRefCount();
+        int initialClosed3RefCount = closedReader3.getRefCount();
+
+        // Note : Ref count of MDR and the underlying readers are not necessarily matching because
+        // The underlying readers ref counts are managed externally by their ReaderManagers.
+
+        // Test initial reference count (should be 1 for all sub readers)
+        assertEquals("Initial reference count should be 1 for live reader", 1, initialLiveRefCount);
+        assertEquals("Initial reference count should be 1 for first closed reader", 1, initialClosed1RefCount);
+        assertEquals("Initial reference count should be 1 for second closed reader", 1, initialClosed2RefCount);
+        assertEquals("Initial reference count should be 1 for third closed reader", 1, initialClosed3RefCount);
+
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2, closedReader3), memChunkReader);
+        assertEquals("Initial reference count should be 1", 1, metricsReader.getRefCount());
+        assertEquals("Live reader reference count should be incremented by 1", initialLiveRefCount + 1, liveReader.getRefCount());
+        assertEquals(
+            "First closed reader reference count should be incremented by 1",
+            initialClosed1RefCount + 1,
+            closedReader1.getRefCount()
+        );
+        assertEquals(
+            "Second closed reader reference count should be incremented by 1",
+            initialClosed2RefCount + 1,
+            closedReader2.getRefCount()
+        );
+        assertEquals(
+            "Third closed reader reference count should be incremented by 1",
+            initialClosed3RefCount + 1,
+            closedReader3.getRefCount()
+        );
+
+        // Test incRef
+        metricsReader.incRef();
+        assertEquals("Reference count should be 2 after incRef", 2, metricsReader.getRefCount());
+        assertEquals("Live reader reference count should remain unchanged", initialLiveRefCount + 1, liveReader.getRefCount());
+        assertEquals(
+            "First closed reader reference count should remain unchanged",
+            initialClosed1RefCount + 1,
+            closedReader1.getRefCount()
+        );
+        assertEquals(
+            "Second closed reader reference count should remain unchanged",
+            initialClosed2RefCount + 1,
+            closedReader2.getRefCount()
+        );
+        assertEquals(
+            "Third closed reader reference count should remain unchanged",
+            initialClosed3RefCount + 1,
+            closedReader3.getRefCount()
+        );
+
+        // Test tryIncRef
+        assertTrue("tryIncRef should return true for open reader", metricsReader.tryIncRef());
+        assertEquals("Reference count should be 3 after tryIncRef", 3, metricsReader.getRefCount());
+
+        // Test decRef (bring it back to 1)
+        metricsReader.decRef();
+        metricsReader.decRef();
+        assertEquals("Reference count should be 1 after two decRefs", 1, metricsReader.getRefCount());
+        assertEquals("Live reader reference count should remain unchanged", initialLiveRefCount + 1, liveReader.getRefCount());
+        assertEquals(
+            "First closed reader reference count should remain unchanged",
+            initialClosed1RefCount + 1,
+            closedReader1.getRefCount()
+        );
+        assertEquals(
+            "Second closed reader reference count should remain unchanged",
+            initialClosed2RefCount + 1,
+            closedReader2.getRefCount()
+        );
+        assertEquals(
+            "Third closed reader reference count should remain unchanged",
+            initialClosed3RefCount + 1,
+            closedReader3.getRefCount()
+        );
+
+        metricsReader.close();
+        assertEquals("Reference count should be 0 after close", 0, metricsReader.getRefCount());
+        assertEquals("Live reader reference count should be decremented by 1", initialLiveRefCount, liveReader.getRefCount());
+        assertEquals("First closed reader reference count should be decremented by 1", initialClosed1RefCount, closedReader1.getRefCount());
+        assertEquals(
+            "Second closed reader reference count should be decremented by 1",
+            initialClosed2RefCount,
+            closedReader2.getRefCount()
+        );
+        assertEquals("Third closed reader reference count should be decremented by 1", initialClosed3RefCount, closedReader3.getRefCount());
+        // Here the underlying readers can still have ref count > 0 because they are managed by their ReaderManagers
+    }
+
+    @Test
+    public void testDoCloseWillDecrementUnderlyingReadersRefCount() {
+        try {
+            int initialLiveRefCount = liveReader.getRefCount();
+            int initialClosed1RefCount = closedReader1.getRefCount();
+            int initialClosed2RefCount = closedReader2.getRefCount();
+            int initialClosed3RefCount = closedReader3.getRefCount();
+
+            metricsReader = new MetricsDirectoryReader(
+                liveReader,
+                Arrays.asList(closedReader1, closedReader2, closedReader3),
+                memChunkReader
+            );
+
+            // Verify ref counts were incremented during construction
+            assertEquals("Live reader ref count should be incremented by 1", initialLiveRefCount + 1, liveReader.getRefCount());
+            assertEquals(
+                "First closed reader ref count should be incremented by 1",
+                initialClosed1RefCount + 1,
+                closedReader1.getRefCount()
+            );
+            assertEquals(
+                "Second closed reader ref count should be incremented by 1",
+                initialClosed2RefCount + 1,
+                closedReader2.getRefCount()
+            );
+            assertEquals(
+                "Third closed reader ref count should be incremented by 1",
+                initialClosed3RefCount + 1,
+                closedReader3.getRefCount()
+            );
+
+            metricsReader.close();
+
+            // After closing MetricsDirectoryReader, the underlying readers ref counts should be decremented back to original
+            assertEquals(
+                "Live reader ref count should be back to initial value after MetricsDirectoryReader is closed",
+                initialLiveRefCount,
+                liveReader.getRefCount()
+            );
+            assertEquals(
+                "First closed reader ref count should be back to initial value after MetricsDirectoryReader is closed",
+                initialClosed1RefCount,
+                closedReader1.getRefCount()
+            );
+            assertEquals(
+                "Second closed reader ref count should be back to initial value after MetricsDirectoryReader is closed",
+                initialClosed2RefCount,
+                closedReader2.getRefCount()
+            );
+            assertEquals(
+                "Third closed reader ref count should be back to initial value after MetricsDirectoryReader is closed",
+                initialClosed3RefCount,
+                closedReader3.getRefCount()
+            );
+        } catch (IOException e) {
+            fail("IOException should not be thrown: " + e.getMessage());
+        }
+    }
+
+    @Test
+    public void testDoOpenIfChangedWithNoChanges() throws IOException {
+        // Set up mock to return the same reader managers that match the closed readers
+        when(closedChunkIndexManager.getReaderManagers()).thenReturn(
+            Arrays.asList(closedReaderManager1, closedReaderManager2, closedReaderManager3)
+        );
+
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2, closedReader3), memChunkReader);
+
+        // Test when no changes occurred
+        DirectoryReader changedReader = DirectoryReader.openIfChanged(metricsReader);
+
+        assertNull("Should return null when no changes occurred", changedReader);
+    }
+
+    @Test
+    public void testDoOpenIfChangedWithLiveIndexChanges() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2), memChunkReader);
+
+        // Verify initial document count
+        int initialDocCount = metricsReader.numDocs();
+        assertEquals("Should have initial documents from live and closed indexes", 6, initialDocCount); // 2 live + 2 closed1 + 2 closed2 =
+                                                                                                        // 6
+
+        // Search for documents initially
+        IndexSearcher initialSearcher = new IndexSearcher(metricsReader);
+        TopDocs initialResults = initialSearcher.search(new MatchAllDocsQuery(), 10);
+        assertEquals("Initial search should find all documents", initialDocCount, initialResults.totalHits.value());
+
+        // Add a new document to the live index using the existing liveWriter
+        liveWriter.addDocument(getLiveDoc("service=newservice,env=test", 1003L, 3000000L, 3999999L));
+
+        // No need to liveWriter.commit(); since DirectoryReader for liveReader should be an NRT reader that reflects live changes
+
+        // Test when live index changes (new document added)
+        DirectoryReader changedReader = DirectoryReader.openIfChanged(metricsReader);
+
+        assertNotNull("Should return new reader when live index changes", changedReader);
+        assertTrue("Changed reader should be instance of MetricsDirectoryReader", changedReader instanceof MetricsDirectoryReader);
+
+        // Verify the new reader sees the additional document
+        MetricsDirectoryReader newMetricsReader = (MetricsDirectoryReader) changedReader;
+        int newDocCount = newMetricsReader.numDocs();
+        assertEquals("New reader should have one additional document", initialDocCount + 1, newDocCount);
+
+        // Search with the new reader should find the additional document
+        IndexSearcher newSearcher = new IndexSearcher(newMetricsReader);
+        TopDocs newResults = newSearcher.search(new MatchAllDocsQuery(), 10);
+        assertEquals("New search should find all documents including the new one", newDocCount, newResults.totalHits.value());
+        assertEquals(
+            "Should find one more document than initial search",
+            initialResults.totalHits.value() + 1,
+            newResults.totalHits.value()
+        );
+
+        // Clean up the changed reader
+        if (changedReader != null && changedReader != metricsReader) {
+            changedReader.close();
+        }
+    }
+
+    @Test(expected = UnsupportedEncodingException.class)
+    public void testDoOpenIfChangedWithIndexCommitThrowsException() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1), memChunkReader);
+        metricsReader.doOpenIfChanged(null); // IndexCommit parameter
+    }
+
+    @Test(expected = UnsupportedEncodingException.class)
+    public void testDoOpenIfChangedWithIndexWriterThrowsException() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1), memChunkReader);
+        metricsReader.doOpenIfChanged(null, false); // IndexWriter parameter
+    }
+
+    @Test(expected = UnsupportedOperationException.class)
+    public void testGetIndexCommitThrowsException() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1), memChunkReader);
+        metricsReader.getIndexCommit();
+    }
+
+    @Test
+    public void testGetReaderCacheHelperReturnsNull() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2), memChunkReader);
+
+        assertNull("CacheHelper should return null", metricsReader.getReaderCacheHelper());
+    }
+
+    @Test
+    public void testMultipleCloseCalls() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2, closedReader3), memChunkReader);
+
+        // Close multiple times should not throw exceptions
+        metricsReader.close();
+        metricsReader.close(); // Should be safe to call multiple times
+
+        // Verify underlying readers are only decremented once
+        assertEquals("Live reader should only be decremented once", 1, liveReader.getRefCount());
+        assertEquals("First closed reader should only be decremented once", 1, closedReader1.getRefCount());
+        assertEquals("Second closed reader should only be decremented once", 1, closedReader2.getRefCount());
+        assertEquals("Third closed reader should only be decremented once", 1, closedReader3.getRefCount());
+    }
+
+    @Test
+    public void testWithEmptyReaders() throws IOException {
+        // Create empty directories
+        Directory emptyLiveDirectory = new ByteBuffersDirectory();
+        Directory emptyClosedDirectory1 = new ByteBuffersDirectory();
+        Directory emptyClosedDirectory2 = new ByteBuffersDirectory();
+        Directory emptyClosedDirectory3 = new ByteBuffersDirectory();
+
+        // Create empty indices
+        IndexWriter emptyLiveWriter = new IndexWriter(emptyLiveDirectory, new IndexWriterConfig(new WhitespaceAnalyzer()));
+        emptyLiveWriter.commit();
+        emptyLiveWriter.close();
+
+        IndexWriter emptyClosedWriter1 = new IndexWriter(emptyClosedDirectory1, new IndexWriterConfig(new WhitespaceAnalyzer()));
+        emptyClosedWriter1.commit();
+        emptyClosedWriter1.close();
+
+        IndexWriter emptyClosedWriter2 = new IndexWriter(emptyClosedDirectory2, new IndexWriterConfig(new WhitespaceAnalyzer()));
+        emptyClosedWriter2.commit();
+        emptyClosedWriter2.close();
+
+        IndexWriter emptyClosedWriter3 = new IndexWriter(emptyClosedDirectory3, new IndexWriterConfig(new WhitespaceAnalyzer()));
+        emptyClosedWriter3.commit();
+        emptyClosedWriter3.close();
+
+        DirectoryReader emptyLiveReader = DirectoryReader.open(emptyLiveDirectory);
+        DirectoryReader emptyClosedReader1 = DirectoryReader.open(emptyClosedDirectory1);
+        DirectoryReader emptyClosedReader2 = DirectoryReader.open(emptyClosedDirectory2);
+        DirectoryReader emptyClosedReader3 = DirectoryReader.open(emptyClosedDirectory3);
+
+        try {
+            MetricsDirectoryReader emptyMetricsReader = new MetricsDirectoryReader(
+                emptyLiveReader,
+                Arrays.asList(emptyClosedReader1, emptyClosedReader2, emptyClosedReader3),
+                memChunkReader
+            );
+
+            assertEquals("Empty readers should have 0 documents", 0, emptyMetricsReader.numDocs());
+            assertEquals("Empty readers should have 0 max docs", 0, emptyMetricsReader.maxDoc());
+            assertTrue("Empty readers should be current", emptyMetricsReader.isCurrent());
+            assertEquals("Should have 3 closed chunk readers", 3, emptyMetricsReader.getClosedChunkReadersCount());
+
+            emptyMetricsReader.close();
+        } finally {
+            emptyLiveReader.close();
+            emptyClosedReader1.close();
+            emptyClosedReader2.close();
+            emptyClosedReader3.close();
+            emptyLiveDirectory.close();
+            emptyClosedDirectory1.close();
+            emptyClosedDirectory2.close();
+            emptyClosedDirectory3.close();
+        }
+    }
+
+    @Test
+    public void testConcurrentAccess() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2), memChunkReader);
+
+        // Test that multiple incRef/decRef operations work correctly
+        List<Thread> threads = new ArrayList<>();
+
+        for (int i = 0; i < 10; i++) {
+            Thread thread = new Thread(() -> {
+                try {
+                    metricsReader.incRef();
+                    // Do some work
+                    Thread.sleep(10);
+                    metricsReader.decRef();
+                } catch (Exception e) {
+                    fail("Concurrent access should not throw exceptions: " + e.getMessage());
+                }
+            });
+            threads.add(thread);
+            thread.start();
+        }
+
+        // Wait for all threads to complete
+        for (Thread thread : threads) {
+            try {
+                thread.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                fail("Thread interrupted: " + e.getMessage());
+            }
+        }
+
+        // Reference count should be back to 1
+        assertEquals("Reference count should be back to 1 after all threads complete", 1, metricsReader.getRefCount());
+
+        // Note: Underlying readers' reference counts are independent and managed by MetricsDirectoryReader
+        // They should have been incremented by 1 during construction
+        // These assertions verify the underlying readers still have their incremented counts
+        assertTrue("Live reader should have positive reference count", liveReader.getRefCount() > 0);
+        assertTrue("Closed reader 1 should have positive reference count", closedReader1.getRefCount() > 0);
+        assertTrue("Closed reader 2 should have positive reference count", closedReader2.getRefCount() > 0);
+    }
+
+    @Test
+    public void testDirectory() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2), memChunkReader);
+
+        // The directory should be a CompositeDirectory
+        assertNotNull("Directory should not be null", metricsReader.directory());
+        assertTrue("Directory should be CompositeDirectory instance", metricsReader.directory() instanceof CompositeDirectory);
+    }
+
+    @Test
+    public void testTryIncRefAfterClose() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2), memChunkReader);
+        metricsReader.close();
+
+        // tryIncRef should return false for closed reader
+        assertFalse("tryIncRef should return false for closed reader", metricsReader.tryIncRef());
+    }
+
+    @Test
+    public void testMatchAllDocsQueryWithThreeClosedReaders() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2, closedReader3), memChunkReader);
+
+        // Create an IndexSearcher using the MetricsDirectoryReader
+        IndexSearcher searcher = new IndexSearcher(metricsReader);
+
+        // Execute a MatchAllDocsQuery to get all documents
+        MatchAllDocsQuery matchAllQuery = new MatchAllDocsQuery();
+        TopDocs topDocs = searcher.search(matchAllQuery, 15);
+
+        // Verify the total number of hits
+        // Expected: 2 live documents + 2 closed documents (first reader) + 2 closed documents (second reader) + 3 closed documents (third
+        // reader) = 9 total
+        int expectedHits = liveReader.numDocs() + closedReader1.numDocs() + closedReader2.numDocs() + closedReader3.numDocs();
+        assertEquals("MatchAllDocsQuery should return all documents from all readers", expectedHits, topDocs.totalHits.value());
+        assertEquals("Should have 9 total documents", 9, topDocs.totalHits.value());
+
+        // Verify that we got the correct number of score docs returned
+        assertEquals(
+            "ScoreDocs array should contain all hits when limit >= total hits",
+            Math.min(expectedHits, 15),
+            topDocs.scoreDocs.length
+        );
+    }
+
+    @Test
+    public void testGetClosedChunkReadersCountWithThreeReaders() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2, closedReader3), memChunkReader);
+        assertEquals("Should have 3 closed chunk readers", 3, metricsReader.getClosedChunkReadersCount());
+    }
+
+    @Test
+    public void testDuplicateChunkRangeQuery() throws IOException {
+        // Test the duplicate chunk scenario where both live and closed indexes contain chunks for the same time range
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2, closedReader3), memChunkReader);
+
+        // Create an IndexSearcher using the MetricsDirectoryReader
+        IndexSearcher searcher = new IndexSearcher(metricsReader);
+
+        // Test 2: Combined query with label filter "service=db,env=prod" AND time range 2000000L-2999999L
+        // This should find exactly 2 documents that match both the label and the time range
+        BooleanQuery combinedQuery = new BooleanQuery.Builder().add(
+            new TermQuery(new Term(Constants.IndexSchema.LABELS, "service=db,env=prod")),
+            BooleanClause.Occur.FILTER
+        )
+            .add(LongPoint.newRangeQuery(Constants.IndexSchema.MIN_TIMESTAMP, Long.MIN_VALUE, 2000000L), BooleanClause.Occur.FILTER)
+            .add(LongPoint.newRangeQuery(Constants.IndexSchema.MAX_TIMESTAMP, 2999999L, Long.MAX_VALUE), BooleanClause.Occur.FILTER)
+            .build();
+
+        TopDocs combinedResults = searcher.search(combinedQuery, 10);
+
+        // Should find exactly 2 documents:
+        // 1. Live index document with "service=db,env=prod" and time range 2000000L-2999999L
+        // 2. Closed index document with "service=db,env=prod" and time range 2000000L-2999999L
+        assertEquals("Should find 2 documents matching both label and time criteria", 2, combinedResults.totalHits.value());
+        assertEquals("Should return 2 score docs for combined query", 2, combinedResults.scoreDocs.length);
+
+        // TODO :
+        // Once we added de-duplication logic in LiveSeriesIndexLeafReader we should test the logic with integration tests
+
+    }
+
+    @Test
+    public void testDoCloseWithSuppressedExceptions() throws IOException {
+        // Test normal close operation to verify basic exception handling structure
+        // This test verifies that the doClose method properly handles multiple readers
+        // and that it can complete successfully under normal conditions
+
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2), memChunkReader);
+
+        // Verify initial state
+        assertEquals("Should have reference count of 1", 1, metricsReader.getRefCount());
+
+        // Close should complete successfully
+        metricsReader.close();
+
+        // Verify closed state
+        assertEquals("Should have reference count of 0 after close", 0, metricsReader.getRefCount());
+
+        // Verify underlying readers are properly decremented
+        assertEquals("Live reader should have original ref count", 1, liveReader.getRefCount());
+        assertEquals("Closed reader 1 should have original ref count", 1, closedReader1.getRefCount());
+        assertEquals("Closed reader 2 should have original ref count", 1, closedReader2.getRefCount());
+
+        // Multiple close calls should be safe
+        metricsReader.close(); // Should not throw exception
+    }
+
+    private Document getLiveDoc(String labels, long reference, long mint, long maxt) {
+        Document doc = new Document();
+        doc.add(new StringField(Constants.IndexSchema.LABELS, labels, Field.Store.NO));
+        doc.add(new LongPoint(Constants.IndexSchema.REFERENCE, reference));
+        doc.add(new NumericDocValuesField(Constants.IndexSchema.REFERENCE, reference));
+        doc.add(new LongPoint(Constants.IndexSchema.MIN_TIMESTAMP, mint));
+        doc.add(new NumericDocValuesField(Constants.IndexSchema.MIN_TIMESTAMP, mint));
+        doc.add(new LongPoint(Constants.IndexSchema.MAX_TIMESTAMP, maxt));
+        doc.add(new NumericDocValuesField(Constants.IndexSchema.MAX_TIMESTAMP, maxt));
+        return doc;
+    }
+
+    private Map<Long, List<MemChunk>> getMemChunksForLiveIndex() {
+        return Map.of(
+            1001L,
+            List.of(getMockChunk(1000000L, 1999999L)),
+            1002L,
+            List.of(getMockChunk(2000000L, 2999999L)),
+            1003L,
+            List.of(getMockChunk(3000000L, 3999999L))
+        );
+
+    }
+
+    private Document getClosedDoc(String labels, long mint, long maxt) {
+        Document doc = new Document();
+        MemChunk memChunk = getMockChunk(mint, maxt);
+
+        doc.add(new StringField(Constants.IndexSchema.LABELS, labels, Field.Store.NO));
+        doc.add(new BinaryDocValuesField(Constants.IndexSchema.CHUNK, ClosedChunkIndexIO.serializeChunk(memChunk.getChunk())));
+        doc.add(new LongPoint(Constants.IndexSchema.MIN_TIMESTAMP, memChunk.getMinTimestamp()));
+        doc.add(new NumericDocValuesField(Constants.IndexSchema.MIN_TIMESTAMP, memChunk.getMinTimestamp()));
+        doc.add(new LongPoint(Constants.IndexSchema.MAX_TIMESTAMP, memChunk.getMaxTimestamp()));
+        doc.add(new NumericDocValuesField(Constants.IndexSchema.MAX_TIMESTAMP, memChunk.getMaxTimestamp()));
+        return doc;
+    }
+
+    private MemChunk getMockChunk(long mint, long maxt) {
+        MemChunk memChunk = new MemChunk(1, mint, maxt, null);
+        XORChunk xorChunk = new XORChunk();
+        ChunkAppender appender = xorChunk.appender();
+
+        for (long i = 0; i < 10; i++) {
+            double value = i * 1.5;
+            appender.append(i, value);
+        }
+        memChunk.setChunk(xorChunk);
+        return memChunk;
+    }
+}
