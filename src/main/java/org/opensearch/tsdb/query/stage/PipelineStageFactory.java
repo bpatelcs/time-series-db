@@ -17,6 +17,7 @@ import org.opensearch.tsdb.lang.m3.stage.MinStage;
 import org.opensearch.tsdb.lang.m3.stage.AsPercentStage;
 import org.opensearch.tsdb.lang.m3.stage.PerSecondStage;
 import org.opensearch.tsdb.lang.m3.stage.RoundStage;
+import org.opensearch.tsdb.lang.m3.stage.RemoveEmptyStage;
 import org.opensearch.tsdb.lang.m3.stage.ScaleStage;
 import org.opensearch.tsdb.lang.m3.stage.SortStage;
 import org.opensearch.tsdb.lang.m3.stage.SumStage;
@@ -97,6 +98,7 @@ public class PipelineStageFactory {
             registerStage(MaxStage.class);
             registerStage(MinStage.class);
             registerStage(PerSecondStage.class);
+            registerStage(RemoveEmptyStage.class);
             registerStage(RoundStage.class);
             registerStage(ScaleStage.class);
             registerStage(SortStage.class);
