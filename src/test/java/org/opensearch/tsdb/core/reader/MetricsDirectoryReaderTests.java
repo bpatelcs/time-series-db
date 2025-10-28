@@ -15,8 +15,10 @@ import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexCommit;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.ReaderManager;
 import org.apache.lucene.search.BooleanClause;
@@ -745,6 +747,521 @@ public class MetricsDirectoryReaderTests extends OpenSearchTestCase {
 
         // Multiple close calls should be safe
         metricsReader.close(); // Should not throw exception
+    }
+
+    /**
+     * Validates that doOpenIfChanged() correctly manages references in the success path.
+     *
+     * Tests that when the live index changes:
+     * - A new MetricsDirectoryReader is created
+     * - Reference counts are properly managed for new and reused readers
+     * - Closing the new reader doesn't leak references
+     *
+     */
+    @Test
+    public void testDoOpenIfChangedSuccessPath() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2), memChunkReader);
+
+        // Record initial refCounts
+        int initialLiveRefCount = liveReader.getRefCount();
+        int initialClosed1RefCount = closedReader1.getRefCount();
+        int initialClosed2RefCount = closedReader2.getRefCount();
+
+        // Add a document to trigger a change
+        liveWriter.addDocument(getLiveDoc("service=test,env=dev", 1004L, 4000000L, 4999999L));
+
+        // Open changed reader
+        DirectoryReader changedReader = DirectoryReader.openIfChanged(metricsReader);
+
+        assertNotNull("Should return new reader when live index changes", changedReader);
+        assertTrue("Changed reader should be MetricsDirectoryReader", changedReader instanceof MetricsDirectoryReader);
+
+        // The new reader should see the additional document
+        MetricsDirectoryReader newMetricsReader = (MetricsDirectoryReader) changedReader;
+        assertEquals("New reader should see the new document", metricsReader.numDocs() + 1, newMetricsReader.numDocs());
+
+        // Clean up the new reader
+        newMetricsReader.close();
+
+        // Verify original readers' refCounts are unchanged
+        // The new reader uses new DirectoryReader instances, not the original ones
+        assertEquals("Live reader refCount should be unchanged", initialLiveRefCount, liveReader.getRefCount());
+        assertEquals("Closed1 reader refCount should match initial", initialClosed1RefCount, closedReader1.getRefCount());
+        assertEquals("Closed2 reader refCount should match initial", initialClosed2RefCount, closedReader2.getRefCount());
+    }
+
+    /**
+     * DirectoryReader wrapper that can be configured to throw IOException during refresh.
+     * Used to test error handling and cleanup logic in MetricsDirectoryReader.doOpenIfChanged().
+     */
+    private static class ThrowingOnRefreshDirectoryReader extends DirectoryReader {
+        private final DirectoryReader delegate;
+        private boolean shouldThrow = false;
+
+        ThrowingOnRefreshDirectoryReader(DirectoryReader delegate) throws IOException {
+            super(delegate.directory(), delegate.leaves().stream().map(ctx -> ctx.reader()).toArray(LeafReader[]::new), null);
+            this.delegate = delegate;
+            delegate.incRef();
+        }
+
+        void enableThrowOnRefresh() {
+            this.shouldThrow = true;
+        }
+
+        @Override
+        protected DirectoryReader doOpenIfChanged() throws IOException {
+            if (shouldThrow) {
+                throw new IOException("Simulated failure during openIfChanged");
+            }
+            DirectoryReader changed = DirectoryReader.openIfChanged(delegate);
+            if (changed != null) {
+                return new ThrowingOnRefreshDirectoryReader(changed);
+            }
+            return null;
+        }
+
+        @Override
+        protected DirectoryReader doOpenIfChanged(IndexCommit commit) throws IOException {
+            throw new UnsupportedOperationException("Not supported in test helper");
+        }
+
+        @Override
+        protected DirectoryReader doOpenIfChanged(IndexWriter writer, boolean applyAllDeletes) throws IOException {
+            throw new UnsupportedOperationException("Not supported in test helper");
+        }
+
+        @Override
+        public long getVersion() {
+            return delegate.getVersion();
+        }
+
+        @Override
+        public boolean isCurrent() throws IOException {
+            return delegate.isCurrent();
+        }
+
+        @Override
+        public IndexCommit getIndexCommit() throws IOException {
+            return delegate.getIndexCommit();
+        }
+
+        @Override
+        protected void doClose() throws IOException {
+            delegate.decRef();
+        }
+
+        @Override
+        public CacheHelper getReaderCacheHelper() {
+            return null;
+        }
+    }
+
+    /**
+     * Tests error handling and cleanup in doOpenIfChanged when an exception occurs during refresh.
+     * Verifies that newly created readers are properly decRef'd while reused readers are not,
+     * preventing both resource leaks and double-decRef errors.
+     */
+    @Test
+    public void testDoOpenIfChangedErrorHandlingWithThrowingReader() throws IOException {
+        ThrowingOnRefreshDirectoryReader throwingClosedChunkReader1 = new ThrowingOnRefreshDirectoryReader(closedReader1);
+        ThrowingOnRefreshDirectoryReader throwingClosedChunkReader2 = new ThrowingOnRefreshDirectoryReader(closedReader2);
+
+        metricsReader = new MetricsDirectoryReader(
+            liveReader,
+            Arrays.asList(throwingClosedChunkReader1, throwingClosedChunkReader2),
+            memChunkReader
+        );
+
+        int initialLiveRefCount = liveReader.getRefCount();
+        int initialClosedChunkReader1RefCount = throwingClosedChunkReader1.getRefCount();
+        int initialClosedChunkReader2RefCount = throwingClosedChunkReader2.getRefCount();
+
+        liveWriter.addDocument(getLiveDoc("service=test,env=dev", 1004L, 4000000L, 4999999L));
+        liveWriter.commit();
+
+        throwingClosedChunkReader2.enableThrowOnRefresh();
+
+        try {
+            DirectoryReader changedReader = DirectoryReader.openIfChanged(metricsReader);
+            if (changedReader != null) {
+                changedReader.close();
+            }
+            fail("Expected IOException during refresh");
+        } catch (IOException e) {
+            assertTrue("Should have simulated failure message", e.getMessage().contains("Simulated failure"));
+        }
+
+        assertEquals("New live reader should be cleaned up", initialLiveRefCount, liveReader.getRefCount());
+        assertEquals(
+            "Reused closed chunk reader should not be decRef'd",
+            initialClosedChunkReader1RefCount,
+            throwingClosedChunkReader1.getRefCount()
+        );
+        assertEquals(
+            "Throwing closed chunk reader should not be decRef'd",
+            initialClosedChunkReader2RefCount,
+            throwingClosedChunkReader2.getRefCount()
+        );
+        assertEquals("Original reader should be usable", 1, metricsReader.getRefCount());
+        assertTrue("Original reader should have docs", metricsReader.numDocs() > 0);
+
+        throwingClosedChunkReader1.close();
+        throwingClosedChunkReader2.close();
+    }
+
+    /**
+     * Verifies that doOpenIfChanged properly manages reference counts in the success path.
+     *
+     * <p>This test validates that newly created readers are properly decRef'd after being passed to
+     * the MetricsDirectoryReader constructor, ensuring only the MDR owns them and preventing reference leaks.
+     *
+     * <p>Expected reference counting flow:
+     * <ol>
+     *   <li>openIfChanged() returns new reader with refCount=1</li>
+     *   <li>MetricsDirectoryReader constructor incRef's to refCount=2</li>
+     *   <li>doOpenIfChanged success path decRef's back to refCount=1</li>
+     *   <li>Only MetricsDirectoryReader owns the new readers</li>
+     * </ol>
+     *
+     * @throws IOException if an error occurs during reader operations
+     */
+    @Test
+    public void testDoOpenIfChangedProperlyDecRefsNewReaders() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2), memChunkReader);
+
+        // Capture initial reference counts before refresh
+        DirectoryReader initialLiveReader = liveReader;
+        int initialLiveReaderRefCount = initialLiveReader.getRefCount();
+        int initialClosed1RefCount = closedReader1.getRefCount();
+        int initialClosed2RefCount = closedReader2.getRefCount();
+
+        // Modify live index to trigger refresh
+        liveWriter.addDocument(getLiveDoc("service=newservice,env=prod", 2001L, 8000000L, 8999999L));
+        liveWriter.commit();
+
+        // Refresh creates new live reader but reuses closed readers
+        DirectoryReader changedMetricsReader = DirectoryReader.openIfChanged(metricsReader);
+
+        assertNotNull("Changed reader should not be null after live index changes", changedMetricsReader);
+        assertTrue("Changed reader should be MetricsDirectoryReader", changedMetricsReader instanceof MetricsDirectoryReader);
+        assertEquals("New reader should have one more document", metricsReader.numDocs() + 1, changedMetricsReader.numDocs());
+
+        // Core assertion: Verify new live reader has refCount=1 (owned only by new MDR)
+        try {
+            java.lang.reflect.Field liveReaderField = MetricsDirectoryReader.class.getDeclaredField("liveSeriesIndexDirectoryReader");
+            liveReaderField.setAccessible(true);
+            DirectoryReader newLiveReader = (DirectoryReader) liveReaderField.get(changedMetricsReader);
+
+            assertNotNull("New live reader should not be null", newLiveReader);
+            assertNotSame("New live reader should be different from old", initialLiveReader, newLiveReader);
+            assertEquals("New live reader refCount should be 1 (owned only by new MDR)", 1, newLiveReader.getRefCount());
+        } catch (Exception e) {
+            fail("Failed to access liveSeriesIndexDirectoryReader via reflection: " + e.getMessage());
+        }
+
+        // Verify reference counts after refresh
+        assertEquals(
+            "Original live reader refCount unchanged after new reader created",
+            initialLiveReaderRefCount,
+            initialLiveReader.getRefCount()
+        );
+        assertEquals("Closed reader 1 refCount incremented (reused by both MDRs)", initialClosed1RefCount + 1, closedReader1.getRefCount());
+        assertEquals("Closed reader 2 refCount incremented (reused by both MDRs)", initialClosed2RefCount + 1, closedReader2.getRefCount());
+
+        // Close old MDR and verify reference counts
+        metricsReader.close();
+
+        assertEquals(
+            "Original live reader refCount decremented after old MDR closed",
+            initialLiveReaderRefCount - 1,
+            initialLiveReader.getRefCount()
+        );
+        assertEquals("Closed reader 1 refCount back to initial after old MDR closed", initialClosed1RefCount, closedReader1.getRefCount());
+        assertEquals("Closed reader 2 refCount back to initial after old MDR closed", initialClosed2RefCount, closedReader2.getRefCount());
+
+        // Close new MDR and verify final cleanup
+        changedMetricsReader.close();
+
+        assertEquals(
+            "Closed reader 1 refCount back to initial - 1 after both MDRs closed",
+            initialClosed1RefCount - 1,
+            closedReader1.getRefCount()
+        );
+        assertEquals(
+            "Closed reader 2 refCount back to initial - 1 after both MDRs closed",
+            initialClosed2RefCount - 1,
+            closedReader2.getRefCount()
+        );
+
+        metricsReader = null;
+    }
+
+    /**
+     * Tests that new closed chunk readers are properly decRef'd in the success path.
+     * Mirrors testDoOpenIfChangedProperlyDecRefsNewReaders but for closed chunk readers instead of live readers.
+     */
+    @Test
+    public void testDoOpenIfChangedProperlyDecRefsNewClosedChunkReaders() throws IOException {
+        metricsReader = new MetricsDirectoryReader(liveReader, Arrays.asList(closedReader1, closedReader2), memChunkReader);
+
+        // Capture initial reference counts before refresh
+        DirectoryReader initialClosedReader1 = closedReader1;
+        int initialLiveRefCount = liveReader.getRefCount();
+        int initialClosed1RefCount = initialClosedReader1.getRefCount();
+        int initialClosed2RefCount = closedReader2.getRefCount();
+
+        // Modify closed chunk index 1 to trigger refresh
+        IndexWriter closedWriter1 = new IndexWriter(closedReader1.directory(), new IndexWriterConfig(new WhitespaceAnalyzer()));
+        closedWriter1.addDocument(getClosedDoc("service=newservice,env=test", 1500000L, 1599999L));
+        closedWriter1.commit();
+        closedWriter1.close();
+
+        // Refresh creates new closed chunk reader 1 but reuses live reader and closed reader 2
+        DirectoryReader changedMetricsReader = DirectoryReader.openIfChanged(metricsReader);
+
+        assertNotNull("Changed reader should not be null after closed chunk index changes", changedMetricsReader);
+        assertTrue("Changed reader should be MetricsDirectoryReader", changedMetricsReader instanceof MetricsDirectoryReader);
+        assertEquals("New reader should have one more document", metricsReader.numDocs() + 1, changedMetricsReader.numDocs());
+
+        // Core assertion: Verify new closed chunk reader 1 has refCount=1 (owned only by new MDR)
+        try {
+            java.lang.reflect.Field closedReadersField = MetricsDirectoryReader.class.getDeclaredField("closedChunkIndexDirectoryReaders");
+            closedReadersField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            List<DirectoryReader> newClosedReaders = (List<DirectoryReader>) closedReadersField.get(changedMetricsReader);
+
+            assertNotNull("New closed readers list should not be null", newClosedReaders);
+            assertEquals("Should have 2 closed chunk readers", 2, newClosedReaders.size());
+
+            DirectoryReader newClosedReader1 = newClosedReaders.get(0);
+            assertNotNull("New closed reader 1 should not be null", newClosedReader1);
+            assertNotSame("New closed reader 1 should be different from old", initialClosedReader1, newClosedReader1);
+            assertEquals("New closed reader 1 refCount should be 1 (owned only by new MDR)", 1, newClosedReader1.getRefCount());
+        } catch (Exception e) {
+            fail("Failed to access closedChunkIndexDirectoryReaders via reflection: " + e.getMessage());
+        }
+
+        // Verify reference counts after refresh
+        assertEquals(
+            "Original closed reader 1 refCount unchanged after new reader created",
+            initialClosed1RefCount,
+            initialClosedReader1.getRefCount()
+        );
+        assertEquals("Live reader refCount incremented (reused by both MDRs)", initialLiveRefCount + 1, liveReader.getRefCount());
+        assertEquals("Closed reader 2 refCount incremented (reused by both MDRs)", initialClosed2RefCount + 1, closedReader2.getRefCount());
+
+        // Close old MDR and verify reference counts
+        metricsReader.close();
+
+        assertEquals(
+            "Original closed reader 1 refCount decremented after old MDR closed",
+            initialClosed1RefCount - 1,
+            initialClosedReader1.getRefCount()
+        );
+        assertEquals("Live reader refCount back to initial after old MDR closed", initialLiveRefCount, liveReader.getRefCount());
+        assertEquals("Closed reader 2 refCount back to initial after old MDR closed", initialClosed2RefCount, closedReader2.getRefCount());
+
+        // Close new MDR and verify final cleanup
+        changedMetricsReader.close();
+
+        assertEquals("Live reader refCount back to initial - 1 after both MDRs closed", initialLiveRefCount - 1, liveReader.getRefCount());
+        assertEquals(
+            "Closed reader 2 refCount back to initial - 1 after both MDRs closed",
+            initialClosed2RefCount - 1,
+            closedReader2.getRefCount()
+        );
+
+        metricsReader = null;
+    }
+
+    /**
+     * Tests error handling when live reader hasn't changed (newLiveSeriesReader == null)
+     * but a closed chunk reader throws during refresh. Verifies the null branch of cleanup logic.
+     */
+    @Test
+    public void testDoOpenIfChangedErrorHandlingWhenLiveReaderUnchanged() throws IOException {
+        ThrowingOnRefreshDirectoryReader throwingClosedChunkReader1 = new ThrowingOnRefreshDirectoryReader(closedReader1);
+        ThrowingOnRefreshDirectoryReader throwingClosedChunkReader2 = new ThrowingOnRefreshDirectoryReader(closedReader2);
+
+        metricsReader = new MetricsDirectoryReader(
+            liveReader,
+            Arrays.asList(throwingClosedChunkReader1, throwingClosedChunkReader2),
+            memChunkReader
+        );
+
+        int initialLiveRefCount = liveReader.getRefCount();
+        int initialClosedChunkReader1RefCount = throwingClosedChunkReader1.getRefCount();
+        int initialClosedChunkReader2RefCount = throwingClosedChunkReader2.getRefCount();
+
+        throwingClosedChunkReader2.enableThrowOnRefresh();
+
+        try {
+            DirectoryReader changedReader = DirectoryReader.openIfChanged(metricsReader);
+            if (changedReader != null) {
+                changedReader.close();
+            }
+            fail("Expected IOException during refresh");
+        } catch (IOException e) {
+            assertTrue("Should have simulated failure", e.getMessage().contains("Simulated failure"));
+        }
+
+        assertEquals("Live reader should be unchanged (was not refreshed)", initialLiveRefCount, liveReader.getRefCount());
+        assertEquals(
+            "Closed chunk reader 1 should be unchanged",
+            initialClosedChunkReader1RefCount,
+            throwingClosedChunkReader1.getRefCount()
+        );
+        assertEquals(
+            "Closed chunk reader 2 should be unchanged",
+            initialClosedChunkReader2RefCount,
+            throwingClosedChunkReader2.getRefCount()
+        );
+
+        throwingClosedChunkReader1.close();
+        throwingClosedChunkReader2.close();
+    }
+
+    /**
+     * DirectoryReader that throws IOException during close to test suppressed exception handling.
+     * When cleanup code calls decRef() on a newly created reader, it triggers doClose() which can throw.
+     */
+    private static class ThrowingOnCloseDirectoryReader extends DirectoryReader {
+        private final DirectoryReader delegate;
+        private boolean shouldThrowOnClose = false;
+        private boolean shouldThrowOnRefresh = false;
+
+        ThrowingOnCloseDirectoryReader(DirectoryReader delegate) throws IOException {
+            super(delegate.directory(), delegate.leaves().stream().map(ctx -> ctx.reader()).toArray(LeafReader[]::new), null);
+            this.delegate = delegate;
+            delegate.incRef();
+        }
+
+        void enableThrowOnClose() {
+            this.shouldThrowOnClose = true;
+        }
+
+        void disableThrowOnClose() {
+            this.shouldThrowOnClose = false;
+        }
+
+        void enableThrowOnRefresh() {
+            this.shouldThrowOnRefresh = true;
+        }
+
+        @Override
+        protected DirectoryReader doOpenIfChanged() throws IOException {
+            if (shouldThrowOnRefresh) {
+                throw new IOException("Simulated failure during openIfChanged");
+            }
+            DirectoryReader changed = DirectoryReader.openIfChanged(delegate);
+            if (changed != null) {
+                ThrowingOnCloseDirectoryReader newReader = new ThrowingOnCloseDirectoryReader(changed);
+                // If this reader is configured to throw on close, propagate that to the new reader
+                if (shouldThrowOnClose) {
+                    newReader.enableThrowOnClose();
+                }
+                return newReader;
+            }
+            return null;
+        }
+
+        @Override
+        protected DirectoryReader doOpenIfChanged(IndexCommit commit) throws IOException {
+            throw new UnsupportedOperationException("Not supported in test helper");
+        }
+
+        @Override
+        protected DirectoryReader doOpenIfChanged(IndexWriter writer, boolean applyAllDeletes) throws IOException {
+            throw new UnsupportedOperationException("Not supported in test helper");
+        }
+
+        @Override
+        public long getVersion() {
+            return delegate.getVersion();
+        }
+
+        @Override
+        public boolean isCurrent() throws IOException {
+            return delegate.isCurrent();
+        }
+
+        @Override
+        public IndexCommit getIndexCommit() throws IOException {
+            return delegate.getIndexCommit();
+        }
+
+        @Override
+        protected void doClose() throws IOException {
+            try {
+                delegate.decRef();
+            } finally {
+                if (shouldThrowOnClose) {
+                    throw new IOException("Simulated failure during decRef cleanup");
+                }
+            }
+        }
+
+        @Override
+        public CacheHelper getReaderCacheHelper() {
+            return null;
+        }
+    }
+
+    /**
+     * Tests suppressed exception handling when decRef throws during cleanup of both live and closed chunk readers.
+     * Verifies that exceptions from decRef are properly suppressed and don't mask the original error.
+     *
+     */
+    @Test
+    public void testDoOpenIfChangedSuppressedExceptionHandling() throws IOException {
+        ThrowingOnCloseDirectoryReader throwingLiveReader = new ThrowingOnCloseDirectoryReader(liveReader);
+        ThrowingOnCloseDirectoryReader throwingClosedChunkReader1 = new ThrowingOnCloseDirectoryReader(closedReader1);
+        ThrowingOnRefreshDirectoryReader throwingClosedChunkReader2 = new ThrowingOnRefreshDirectoryReader(closedReader2);
+
+        metricsReader = new MetricsDirectoryReader(
+            throwingLiveReader,
+            Arrays.asList(throwingClosedChunkReader1, throwingClosedChunkReader2),
+            memChunkReader
+        );
+
+        liveWriter.addDocument(getLiveDoc("service=test,env=dev", 1004L, 4000000L, 4999999L));
+        liveWriter.commit();
+
+        IndexWriter writer1 = new IndexWriter(closedReader1.directory(), new IndexWriterConfig(new WhitespaceAnalyzer()));
+        writer1.addDocument(getClosedDoc("service=test", 100L, 200L));
+        writer1.commit();
+        writer1.close();
+
+        throwingLiveReader.enableThrowOnClose();
+        throwingClosedChunkReader1.enableThrowOnClose();
+        throwingClosedChunkReader2.enableThrowOnRefresh();
+
+        try {
+            DirectoryReader changedReader = DirectoryReader.openIfChanged(metricsReader);
+            if (changedReader != null) {
+                changedReader.close();
+            }
+            fail("Expected IOException during refresh");
+        } catch (IOException e) {
+            assertTrue("Primary exception should be from openIfChanged", e.getMessage().contains("Simulated failure"));
+
+            Throwable[] suppressed = e.getSuppressed();
+            assertTrue("Should have at least 2 suppressed exceptions (live + closed chunk reader)", suppressed.length >= 2);
+
+            int cleanupExceptionCount = 0;
+            for (Throwable t : suppressed) {
+                if (t.getMessage() != null && t.getMessage().contains("Simulated failure during decRef cleanup")) {
+                    cleanupExceptionCount++;
+                }
+            }
+            assertEquals("Should have suppressed exceptions from both live and closed chunk reader cleanup", 2, cleanupExceptionCount);
+        }
+
+        throwingLiveReader.disableThrowOnClose();
+        throwingClosedChunkReader1.disableThrowOnClose();
+        throwingLiveReader.close();
+        throwingClosedChunkReader1.close();
+        throwingClosedChunkReader2.close();
     }
 
     private Document getLiveDoc(String labels, long reference, long mint, long maxt) {

@@ -270,6 +270,57 @@ public class MetricsDirectoryReaderReferenceManagerTests extends OpenSearchTestC
     }
 
     @Test
+    public void testSnapshotUpdatedAfterStructuralRefresh() throws IOException {
+        // Start with 1 closed chunk index
+        when(closedChunkIndexManager.getReaderManagers()).thenReturn(Arrays.asList(closedReaderManager1));
+
+        referenceManager = new MetricsDirectoryReaderReferenceManager(liveReaderManager, closedChunkIndexManager, memChunkReader, shardId);
+
+        // Get initial reader version
+        OpenSearchDirectoryReader initialReader = referenceManager.acquire();
+        long initialVersion = initialReader.getVersion();
+        referenceManager.release(initialReader);
+
+        // Add a second closed chunk index - this should trigger structural refresh
+        when(closedChunkIndexManager.getReaderManagers()).thenReturn(Arrays.asList(closedReaderManager1, closedReaderManager2));
+
+        // First refresh - should be structural (index count changed from 1 to 2)
+        referenceManager.maybeRefreshBlocking();
+
+        OpenSearchDirectoryReader readerAfterFirstRefresh = referenceManager.acquire();
+        long versionAfterFirstRefresh = readerAfterFirstRefresh.getVersion();
+        MetricsDirectoryReader metricsReaderAfterFirst = (MetricsDirectoryReader) readerAfterFirstRefresh.getDelegate();
+        assertEquals("Should have 2 closed chunk readers after first refresh", 2, metricsReaderAfterFirst.getClosedChunkReadersCount());
+        assertTrue("Version should have incremented after structural refresh", versionAfterFirstRefresh > initialVersion);
+        referenceManager.release(readerAfterFirstRefresh);
+
+        // Second refresh with no index changes - should NOT be structural
+        // This validates that the snapshot was updated
+        referenceManager.maybeRefreshBlocking();
+
+        OpenSearchDirectoryReader readerAfterSecondRefresh = referenceManager.acquire();
+        long versionAfterSecondRefresh = readerAfterSecondRefresh.getVersion();
+
+        assertEquals(
+            "Version should NOT change on second refresh (lightweight refresh, no changes)",
+            versionAfterFirstRefresh,
+            versionAfterSecondRefresh
+        );
+
+        referenceManager.release(readerAfterSecondRefresh);
+
+        // Third refresh - still should not trigger structural refresh
+        referenceManager.maybeRefreshBlocking();
+
+        OpenSearchDirectoryReader readerAfterThirdRefresh = referenceManager.acquire();
+        long versionAfterThirdRefresh = readerAfterThirdRefresh.getVersion();
+
+        assertEquals("Version should still not change on third refresh", versionAfterFirstRefresh, versionAfterThirdRefresh);
+
+        referenceManager.release(readerAfterThirdRefresh);
+    }
+
+    @Test
     public void testRefreshWhenClosedChunkIndicesDeleted() throws IOException {
         // Start with 3 closed indices
         when(closedChunkIndexManager.getReaderManagers()).thenReturn(

@@ -120,41 +120,115 @@ public class MetricsDirectoryReader extends DirectoryReader {
     }
 
     /**
-     * Only handles update on existing DirectoryReaders.
-     * If new closed chunk indices are added or existing closed chunk indices are removed, it should be handled in MetricsDirectoryReaderReferenceManager
-     * */
-    @Override
-    protected DirectoryReader doOpenIfChanged() throws IOException {
-        boolean anyReaderChanged = false;
-
-        // Check if live series reader has changes
-        DirectoryReader newLiveReader = DirectoryReader.openIfChanged(this.liveSeriesIndexDirectoryReader);
-        if (newLiveReader != null) {
-            anyReaderChanged = true;
-        }
-
-        // Build new list of closed readers - either from existing readers if unchanged or acquire new ones
-        List<DirectoryReader> newClosedReaders = new ArrayList<>();
-        for (DirectoryReader reader : this.closedChunkIndexDirectoryReaders) {
-            DirectoryReader newReader = DirectoryReader.openIfChanged(reader);
-            newClosedReaders.add(newReader != null ? newReader : reader);
-            if (newReader != null) {
-                anyReaderChanged = true;
+     * Releases references to newly created readers after they've been passed to MetricsDirectoryReader constructor.
+     *
+     * <p>This method ensures proper reference counting by decRef'ing only NEW readers (not reused ones).
+     * Since the MetricsDirectoryReader constructor incRef's all readers, this cleanup ensures that only
+     * the MetricsDirectoryReader owns the new readers, preventing reference leaks.
+     *
+     * @param newLiveSeriesReader the new live series reader, or null if unchanged
+     * @param newClosedChunkReaders list of closed chunk readers (mix of new and reused)
+     * @param suppressExceptions if true, catches IOExceptions and adds them to parentException; if false, throws them
+     * @param parentException optional parent exception to attach suppressed exceptions to (when suppressExceptions=true)
+     * @throws IOException if suppressExceptions=false and decRef fails
+     */
+    private void cleanupNewReaders(
+        DirectoryReader newLiveSeriesReader,
+        List<DirectoryReader> newClosedChunkReaders,
+        boolean suppressExceptions,
+        Exception parentException
+    ) throws IOException {
+        if (newLiveSeriesReader != null) {
+            if (suppressExceptions) {
+                try {
+                    newLiveSeriesReader.decRef();
+                } catch (IOException decRefException) {
+                    if (parentException != null) {
+                        parentException.addSuppressed(decRefException);
+                    }
+                }
+            } else {
+                newLiveSeriesReader.decRef();
             }
         }
 
-        // If no readers changed, return null (no refresh needed)
-        if (!anyReaderChanged) {
-            return null;
-        }
+        for (int i = 0; i < newClosedChunkReaders.size(); i++) {
+            DirectoryReader newReader = newClosedChunkReaders.get(i);
+            DirectoryReader oldReader = this.closedChunkIndexDirectoryReaders.get(i);
 
-        // Create new reader with updated DirectoryReaders
-        return new MetricsDirectoryReader(
-            newLiveReader != null ? newLiveReader : this.liveSeriesIndexDirectoryReader,
-            newClosedReaders,
-            memChunkReader,
-            version + 1
-        );
+            if (newReader != null && newReader != oldReader) {
+                if (suppressExceptions) {
+                    try {
+                        newReader.decRef();
+                    } catch (IOException decRefException) {
+                        if (parentException != null) {
+                            parentException.addSuppressed(decRefException);
+                        }
+                    }
+                } else {
+                    newReader.decRef();
+                }
+            }
+        }
+    }
+
+    /**
+     * Attempts to refresh the reader if any of the underlying readers have changed.
+     * Only handles updates on existing DirectoryReaders.
+     *
+     * If new closed chunk indices are added or existing ones are removed,
+     * it should be handled in MetricsDirectoryReaderReferenceManager.
+     *
+     * @return a new DirectoryReader if changes were detected, null otherwise
+     * @throws IOException if an I/O error occurs during refresh
+     */
+    @Override
+    protected DirectoryReader doOpenIfChanged() throws IOException {
+        boolean anyReaderChanged = false;
+        DirectoryReader newLiveSeriesReader = null;
+        List<DirectoryReader> newClosedChunkReaders = new ArrayList<>();
+
+        try {
+            // Check for changes in live series reader
+            newLiveSeriesReader = DirectoryReader.openIfChanged(this.liveSeriesIndexDirectoryReader);
+            if (newLiveSeriesReader != null) {
+                anyReaderChanged = true;
+            }
+
+            // Check for changes in closed chunk readers
+            for (DirectoryReader reader : this.closedChunkIndexDirectoryReaders) {
+                DirectoryReader newReader = DirectoryReader.openIfChanged(reader);
+
+                if (newReader != null) {
+                    newClosedChunkReaders.add(newReader);
+                    anyReaderChanged = true;
+                } else {
+                    newClosedChunkReaders.add(reader);
+                }
+            }
+
+            if (!anyReaderChanged) {
+                return null;
+            }
+
+            // Create new MetricsDirectoryReader with refreshed readers
+            MetricsDirectoryReader newMetricsReader = new MetricsDirectoryReader(
+                newLiveSeriesReader != null ? newLiveSeriesReader : this.liveSeriesIndexDirectoryReader,
+                newClosedChunkReaders,
+                memChunkReader,
+                version + 1
+            );
+
+            // Release local references - constructor has already incRef'd the readers
+            cleanupNewReaders(newLiveSeriesReader, newClosedChunkReaders, false, null);
+
+            return newMetricsReader;
+
+        } catch (Exception e) {
+            // Clean up new readers on failure
+            cleanupNewReaders(newLiveSeriesReader, newClosedChunkReaders, true, e);
+            throw e;
+        }
     }
 
     @Override

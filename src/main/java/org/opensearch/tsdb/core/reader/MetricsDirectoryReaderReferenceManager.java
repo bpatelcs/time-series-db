@@ -34,10 +34,11 @@ public class MetricsDirectoryReaderReferenceManager extends ReferenceManager<Ope
 
     private static final Logger log = LogManager.getLogger(MetricsDirectoryReaderReferenceManager.class);
     private final ReaderManager liveSeriesIndexReaderManager;
-    private final List<ReaderManager> closedChunkIndexReaderManagers;
     private final ClosedChunkIndexManager closedChunkIndexManager;
     private final MemChunkReader memChunkReader;
     private final ShardId shardId;
+
+    private volatile List<ReaderManager> closedChunkIndexReaderManagers;
 
     /**
      * Creates a new MetricsDirectoryReaderReferenceManager.
@@ -66,7 +67,6 @@ public class MetricsDirectoryReaderReferenceManager extends ReferenceManager<Ope
             creatNewMetricsDirectoryReader(liveSeriesIndexReaderManager, closedChunkIndexManager, memChunkReader, 0L),
             shardId
         );
-
     }
 
     private MetricsDirectoryReader creatNewMetricsDirectoryReader(
@@ -116,12 +116,20 @@ public class MetricsDirectoryReaderReferenceManager extends ReferenceManager<Ope
         reference.decRef();
     }
 
+    /**
+     * Refreshes the reader if needed. Performs either a structural refresh (if indexes were added/removed)
+     * or a lightweight refresh (if only data within existing indexes changed).
+     *
+     * @param referenceToRefresh the current reader reference
+     * @return a new reader if refresh occurred, or null if no refresh was needed
+     * @throws IOException if an I/O error occurs during refresh
+     */
     @Override
     protected OpenSearchDirectoryReader refreshIfNeeded(OpenSearchDirectoryReader referenceToRefresh) throws IOException {
+        List<ReaderManager> currentReaderManagers = closedChunkIndexManager.getReaderManagers();
 
-        if (this.closedChunkIndexReaderManagers.size() != closedChunkIndexManager.getReaderManagers().size()) {
-            // The number of closed chunk index readers has changed, so we need to refresh
-            // and increment the current version by 1
+        if (this.closedChunkIndexReaderManagers.size() != currentReaderManagers.size()) {
+            // Structural change detected - indexes were added or removed
             final OpenSearchDirectoryReader reader = OpenSearchDirectoryReader.wrap(
                 creatNewMetricsDirectoryReader(
                     liveSeriesIndexReaderManager,
@@ -131,15 +139,16 @@ public class MetricsDirectoryReaderReferenceManager extends ReferenceManager<Ope
                 ),
                 shardId
             );
+
+            // Update snapshot to prevent redundant structural refreshes
+            this.closedChunkIndexReaderManagers = currentReaderManagers;
+
             return reader;
 
         } else {
-            // no index addition or deletion detected, so we can try to refresh the existing readers
-            // version of new reader will be incremented in MetricsDirectoryReader.doOpenIfChanged
-            final OpenSearchDirectoryReader reader = (OpenSearchDirectoryReader) DirectoryReader.openIfChanged(referenceToRefresh);
-            return reader;
+            // No structural change - attempt lightweight refresh
+            return (OpenSearchDirectoryReader) DirectoryReader.openIfChanged(referenceToRefresh);
         }
-
     }
 
     @Override
