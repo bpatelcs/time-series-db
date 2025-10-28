@@ -72,14 +72,16 @@ public class IndexUtilsTests extends OpenSearchTestCase {
         assertTrue("Labels should be empty when document not found", labels.isEmpty());
     }
 
-    public void testLabelsForDocWithMalformedLabels() throws IOException {
+    public void testLabelsForDocWithEmptyLabelValue() throws IOException {
         // Test that malformed labels with empty values throw IOException
         MockSortedSetDocValues labelsDocValues = new MockSortedSetDocValues(Arrays.asList("missing_value:"));
 
         MockMetricsDocValues metricsDocValues = new MockMetricsDocValues(labelsDocValues);
 
-        IOException exception = assertThrows(IOException.class, () -> { IndexUtils.labelsForDoc(0, metricsDocValues); });
-        assertTrue("Exception should mention malformed label", exception.getMessage().contains("Malformed label: missing_value:"));
+        Labels labels = IndexUtils.labelsForDoc(0, metricsDocValues);
+        Labels expectedLabels = ByteLabels.fromStrings("missing_value", "");
+        assertEquals("Labels should contain expected labels", expectedLabels, labels);
+        assertEquals("", labels.get("missing_value"));
     }
 
     public void testLabelsForDocWithValidMultipleColons() throws IOException {
@@ -110,22 +112,25 @@ public class IndexUtilsTests extends OpenSearchTestCase {
         MockSortedSetDocValues labelsDocValues1 = new MockSortedSetDocValues(Arrays.asList("malformed_no_colon"));
         MockMetricsDocValues metricsDocValues1 = new MockMetricsDocValues(labelsDocValues1);
 
-        IOException exception1 = assertThrows(IOException.class, () -> { IndexUtils.labelsForDoc(0, metricsDocValues1); });
-        assertTrue("Exception should mention malformed label", exception1.getMessage().contains("Malformed label: malformed_no_colon"));
+        var exception1 = assertThrows(IllegalArgumentException.class, () -> { IndexUtils.labelsForDoc(0, metricsDocValues1); });
+        assertTrue(
+            "Exception should mention malformed label, but got: " + exception1.getMessage(),
+            exception1.getMessage().contains("Invalid key value pair: malformed_no_colon")
+        );
 
         // Test colon at start
         MockSortedSetDocValues labelsDocValues2 = new MockSortedSetDocValues(Arrays.asList(":missing_key"));
         MockMetricsDocValues metricsDocValues2 = new MockMetricsDocValues(labelsDocValues2);
 
-        IOException exception2 = assertThrows(IOException.class, () -> { IndexUtils.labelsForDoc(0, metricsDocValues2); });
-        assertTrue("Exception should mention malformed label", exception2.getMessage().contains("Malformed label: :missing_key"));
+        var exception2 = assertThrows(IllegalArgumentException.class, () -> { IndexUtils.labelsForDoc(0, metricsDocValues2); });
+        assertTrue("Exception should mention malformed label", exception2.getMessage().contains("Invalid key value pair: :missing_key"));
 
         // Test empty string
         MockSortedSetDocValues labelsDocValues3 = new MockSortedSetDocValues(Arrays.asList(""));
         MockMetricsDocValues metricsDocValues3 = new MockMetricsDocValues(labelsDocValues3);
 
-        IOException exception3 = assertThrows(IOException.class, () -> { IndexUtils.labelsForDoc(0, metricsDocValues3); });
-        assertTrue("Exception should mention malformed label", exception3.getMessage().contains("Malformed label: "));
+        var exception3 = assertThrows(IllegalArgumentException.class, () -> { IndexUtils.labelsForDoc(0, metricsDocValues3); });
+        assertTrue("Exception should mention malformed label", exception3.getMessage().contains("Invalid key value pair: "));
     }
 
     public void testLabelsForDocWithSingleLabel() throws IOException {

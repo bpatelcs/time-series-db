@@ -10,7 +10,6 @@ package org.opensearch.tsdb.core.index;
 import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.util.BytesRef;
 import org.opensearch.tsdb.core.model.ByteLabels;
-import org.opensearch.tsdb.core.model.LabelConstants;
 import org.opensearch.tsdb.core.model.Labels;
 import org.opensearch.tsdb.core.reader.MetricsDocValues;
 
@@ -51,29 +50,19 @@ public final class IndexUtils {
         int valueCount = labelsDocValues.docValueCount();
         // docValueCount() is equivalent to one plus the maximum ordinal, that means ordinal
         // range is [0, docValueCount() - 1]
-        List<String> labelStrings = new ArrayList<>(valueCount * 2);
+        List<String> labelStrings = new ArrayList<>(valueCount);
 
         for (int i = 0; i < valueCount; i++) {
             long ord = labelsDocValues.nextOrd();
 
             BytesRef term = labelsDocValues.lookupOrd(ord);
-            String labelString = term.utf8ToString();
+            String labelKVString = term.utf8ToString();
 
             // Parse "key:value" format (labels are stored with colon separator)
-            int delimiterIndex = labelString.indexOf(LabelConstants.LABEL_DELIMITER);
-            if (delimiterIndex > 0 && delimiterIndex < labelString.length() - 1) {
-                String key = labelString.substring(0, delimiterIndex);
-                String value = labelString.substring(delimiterIndex + 1);
-                labelStrings.add(key);
-                labelStrings.add(value);
-            } else {
-                // malformed labels
-                throw new IOException("Malformed label: " + labelString + " in docId: " + docId);
-            }
+            labelStrings.add(labelKVString);
         }
 
         // Convert to ByteLabels using the fromStrings method
-        return ByteLabels.fromStrings(labelStrings.toArray(new String[0]));
+        return ByteLabels.fromSortedKeyValuePairs(labelStrings);
     }
-
 }
