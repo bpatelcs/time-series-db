@@ -11,8 +11,7 @@ log_difference = fetch service:logger name:logs
 
 not_error_backoff_proportion = fetch service:logger error_type:!backoff
   | sum
-  # | divideSeries ( TODO uncomment this line and remove the following asPercent once divide is implemented
-  | asPercent (
+  | divideSeries (
     fetch service:logger error_type:*
       | sum
   )

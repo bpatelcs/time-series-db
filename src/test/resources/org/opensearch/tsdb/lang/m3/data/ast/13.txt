@@ -25,7 +25,7 @@ ROOT
             TAG_KEY(error_type, inverted=true)
               TAG_VALUE(backoff)
           FUNCTION(sum)
-          FUNCTION(asPercent)
+          FUNCTION(divideSeries)
             GROUP
               FUNCTION(fetch)
                 TAG_KEY(service)

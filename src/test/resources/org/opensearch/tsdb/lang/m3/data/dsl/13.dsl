@@ -578,7 +578,7 @@
         "buckets_path" : [ ],
         "stages" : [
           {
-            "type" : "as_percent",
+            "type" : "divide",
             "right_op_reference" : "8"
           },
           {

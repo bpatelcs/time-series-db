@@ -23,6 +23,7 @@ import org.opensearch.tsdb.lang.m3.stage.AliasStage;
 import org.opensearch.tsdb.lang.m3.stage.AsPercentStage;
 import org.opensearch.tsdb.lang.m3.stage.AvgStage;
 import org.opensearch.tsdb.lang.m3.stage.CountStage;
+import org.opensearch.tsdb.lang.m3.stage.DivideStage;
 import org.opensearch.tsdb.lang.m3.stage.HistogramPercentileStage;
 import org.opensearch.tsdb.lang.m3.stage.KeepLastValueStage;
 import org.opensearch.tsdb.lang.m3.stage.MaxStage;
@@ -473,11 +474,11 @@ public class SourceBuilderVisitor extends M3PlanVisitor<SourceBuilderVisitor.Com
     private PipelineStage getStageFor(M3PlanNode planNode, String rhsReferenceName) {
         if (planNode instanceof BinaryPlanNode binaryPlanNode) {
             return switch (binaryPlanNode.getType()) {
+                // TODO: support tag/label name param
                 case AS_PERCENT -> new AsPercentStage(rhsReferenceName);
                 // TODO: return DiffStage once implemented
                 case DIFF -> throw new UnsupportedOperationException("diff not yet implemented");
-                // TODO: return DivideStage once implemented
-                case DIVIDE_SERIES -> throw new UnsupportedOperationException("divideSeries not yet implemented");
+                case DIVIDE_SERIES -> new DivideStage(rhsReferenceName);
             };
         }
         if (planNode instanceof UnionPlanNode) {
