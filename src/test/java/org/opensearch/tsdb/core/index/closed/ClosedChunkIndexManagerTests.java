@@ -378,7 +378,7 @@ public class ClosedChunkIndexManagerTests extends OpenSearchTestCase {
         ClosedChunkIndexManager manager = new ClosedChunkIndexManager(
             tempDir,
             metadataStore,
-            new TimeBasedRetention(org.opensearch.tsdb.core.utils.Constants.Time.DEFAULT_BLOCK_DURATION, 0),
+            new TimeBasedRetention(org.opensearch.tsdb.core.utils.Constants.Time.DEFAULT_BLOCK_DURATION, 300_000),
             threadPool,
             new ShardId("index", "uuid", 0)
         );
