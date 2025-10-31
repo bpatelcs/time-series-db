@@ -187,6 +187,12 @@ public abstract class AbstractBinaryProjectionStage implements BinaryPipelineSta
      */
     @Override
     public List<TimeSeries> process(List<TimeSeries> left, List<TimeSeries> right) {
+        if (left == null) {
+            throw new NullPointerException(getName() + " stage received null left input");
+        }
+        if (right == null) {
+            throw new NullPointerException(getName() + " stage received null right input");
+        }
         if (left.isEmpty() || right.isEmpty()) {
             return new ArrayList<>();
         }

@@ -26,6 +26,7 @@ import java.util.Map;
 
 import static org.opensearch.core.xcontent.ToXContent.EMPTY_PARAMS;
 import static org.opensearch.tsdb.TestUtils.assertSamplesEqual;
+import static org.opensearch.tsdb.TestUtils.assertNullInputThrowsException;
 
 public class PerSecondStageTests extends AbstractWireSerializingTestCase<PerSecondStage> {
 
@@ -342,5 +343,10 @@ public class PerSecondStageTests extends AbstractWireSerializingTestCase<PerSeco
     @Override
     protected Writeable.Reader<PerSecondStage> instanceReader() {
         return PerSecondStage::readFrom;
+    }
+
+    public void testNullInputThrowsException() {
+        PerSecondStage stage = new PerSecondStage();
+        assertNullInputThrowsException(stage, "per_second");
     }
 }

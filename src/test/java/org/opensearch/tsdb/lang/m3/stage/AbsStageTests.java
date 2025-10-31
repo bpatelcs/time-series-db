@@ -11,6 +11,7 @@ import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.common.xcontent.XContentFactory;
 import org.opensearch.test.AbstractWireSerializingTestCase;
+import org.opensearch.tsdb.TestUtils;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Labels;
@@ -158,11 +159,8 @@ public class AbsStageTests extends AbstractWireSerializingTestCase<AbsStage> {
     }
 
     public void testNullInputThrowsException() {
-        // Test that null input throws NullPointerException
         AbsStage stage = new AbsStage();
-
-        // Should throw NullPointerException for null input
-        assertThrows(NullPointerException.class, () -> stage.process(null));
+        TestUtils.assertNullInputThrowsException(stage, "abs");
     }
 
     public void testToXContent() throws Exception {

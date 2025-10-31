@@ -26,6 +26,7 @@ import java.util.Map;
 import static org.opensearch.core.xcontent.ToXContent.EMPTY_PARAMS;
 import static org.opensearch.tsdb.TestUtils.assertSamplesEqual;
 import static org.opensearch.tsdb.TestUtils.findSeriesByLabel;
+import static org.opensearch.tsdb.TestUtils.assertNullInputThrowsException;
 
 public class MovingStageTests extends AbstractWireSerializingTestCase<MovingStage> {
 
@@ -453,5 +454,10 @@ public class MovingStageTests extends AbstractWireSerializingTestCase<MovingStag
             WindowAggregationType.MIN,
             WindowAggregationType.MEDIAN };
         return new MovingStage(intervalMillis, randomFrom(functions));
+    }
+
+    public void testNullInputThrowsException() {
+        MovingStage stage = new MovingStage(30L, WindowAggregationType.SUM);
+        assertNullInputThrowsException(stage, "moving");
     }
 }

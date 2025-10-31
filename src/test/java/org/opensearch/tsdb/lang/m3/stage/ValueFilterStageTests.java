@@ -14,6 +14,7 @@ import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.xcontent.ToXContent;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.test.AbstractWireSerializingTestCase;
+import org.opensearch.tsdb.TestUtils;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Labels;
@@ -45,12 +46,8 @@ public class ValueFilterStageTests extends AbstractWireSerializingTestCase<Value
     // ========== Process Method Tests ==========
 
     public void testProcessWithNullInput() {
-        // Arrange
         ValueFilterStage filterStage = new ValueFilterStage(ValueFilterType.EQ, 10.0);
-
-        // Act & Assert
-        NullPointerException exception = expectThrows(NullPointerException.class, () -> filterStage.process(null));
-        assertEquals("Input cannot be null", exception.getMessage());
+        TestUtils.assertNullInputThrowsException(filterStage, "value_filter");
     }
 
     public void testProcessWithEmptyInput() {

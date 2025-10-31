@@ -13,6 +13,7 @@ import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.test.AbstractWireSerializingTestCase;
+import org.opensearch.tsdb.TestUtils;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Sample;
@@ -101,7 +102,15 @@ public class AliasByTagsStageTests extends AbstractWireSerializingTestCase<Alias
 
     public void testGetName() {
         AliasByTagsStage stage = new AliasByTagsStage(List.of("city"));
-        assertEquals("aliasByTags", stage.getName());
+        assertEquals("alias_by_tags", stage.getName());
+    }
+
+    /**
+     * Test AliasByTagsStage with null input throws exception.
+     */
+    public void testNullInputThrowsException() {
+        AliasByTagsStage stage = new AliasByTagsStage(List.of("city"));
+        TestUtils.assertNullInputThrowsException(stage, "alias_by_tags");
     }
 
     public void testFromArgs() {

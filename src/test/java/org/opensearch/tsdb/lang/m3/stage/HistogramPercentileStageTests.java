@@ -347,7 +347,7 @@ public class HistogramPercentileStageTests extends AbstractWireSerializingTestCa
 
         // Test valid constructor
         HistogramPercentileStage validStage = new HistogramPercentileStage("bucketId", "bucket", List.of(50.0f, 95.0f, 99.0f));
-        assertEquals("histogramPercentile", validStage.getName());
+        assertEquals("histogram_percentile", validStage.getName());
     }
 
     /**
@@ -468,7 +468,7 @@ public class HistogramPercentileStageTests extends AbstractWireSerializingTestCa
 
         HistogramPercentileStage stage = HistogramPercentileStage.fromArgs(args);
         assertNotNull(stage);
-        assertEquals("histogramPercentile", stage.getName());
+        assertEquals("histogram_percentile", stage.getName());
     }
 
     public void testFromArgsNullArgs() {
@@ -922,6 +922,14 @@ public class HistogramPercentileStageTests extends AbstractWireSerializingTestCa
         assertTrue("toString should contain bucketId", negInfToString.contains("edge1"));
         assertTrue("toString should contain bucketRange", negInfToString.contains("-Inf-1s"));
         assertTrue("toString should contain computed upper bound", negInfToString.contains("upper=1000.0"));
+    }
+
+    /**
+     * Test HistogramPercentileStage with null input throws exception.
+     */
+    public void testNullInputThrowsException() {
+        HistogramPercentileStage stage = new HistogramPercentileStage("bucketid", "bucket", List.of(99.0f));
+        TestUtils.assertNullInputThrowsException(stage, "histogram_percentile");
     }
 
 }

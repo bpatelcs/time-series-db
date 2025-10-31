@@ -11,6 +11,7 @@ import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.test.AbstractWireSerializingTestCase;
+import org.opensearch.tsdb.TestUtils;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Sample;
@@ -163,6 +164,14 @@ public class AliasStageTests extends AbstractWireSerializingTestCase<AliasStage>
         List<TimeSeries> result = stage.process(input);
 
         assertTrue(result.isEmpty());
+    }
+
+    /**
+     * Test AliasStage with null input throws exception.
+     */
+    public void testAliasStageWithNullInput() {
+        AliasStage stage = new AliasStage("test");
+        TestUtils.assertNullInputThrowsException(stage, "alias");
     }
 
     /**

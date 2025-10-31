@@ -58,6 +58,9 @@ public class MovingStage implements UnaryPipelineStage {
 
     @Override
     public List<TimeSeries> process(List<TimeSeries> input) {
+        if (input == null) {
+            throw new NullPointerException(getName() + " stage received null input");
+        }
         if (input.isEmpty()) {
             return input;
         }

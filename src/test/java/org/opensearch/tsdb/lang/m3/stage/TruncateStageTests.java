@@ -22,6 +22,7 @@ import java.util.List;
 import static org.opensearch.core.xcontent.ToXContent.EMPTY_PARAMS;
 import static org.opensearch.tsdb.TestUtils.assertSamplesEqual;
 import static org.opensearch.tsdb.TestUtils.findSeriesByLabel;
+import static org.opensearch.tsdb.TestUtils.assertNullInputThrowsException;
 
 /**
  * Unit tests for TruncateStage
@@ -201,5 +202,10 @@ public class TruncateStageTests extends AbstractWireSerializingTestCase<Truncate
             () -> TruncateStage.fromArgs(java.util.Map.of("min_timestamp", 10L))
         );
         assertTrue(ex.getMessage().contains("requires both"));
+    }
+
+    public void testNullInputThrowsException() {
+        TruncateStage stage = new TruncateStage(100L, 200L);
+        assertNullInputThrowsException(stage, "truncate");
     }
 }

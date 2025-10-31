@@ -11,6 +11,7 @@ import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.test.AbstractWireSerializingTestCase;
+import org.opensearch.tsdb.TestUtils;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Labels;
@@ -625,11 +626,8 @@ public class ScaleStageTests extends AbstractWireSerializingTestCase<ScaleStage>
     }
 
     public void testUnaryPipelineStageNullInput() {
-        // Test that null input throws NullPointerException
         ScaleStage stage = new ScaleStage(1.0);
-
-        // Should throw NullPointerException for null input
-        assertThrows(NullPointerException.class, () -> stage.process(null));
+        TestUtils.assertNullInputThrowsException(stage, "scale");
     }
 
     public void testUnaryPipelineStageComposition() {

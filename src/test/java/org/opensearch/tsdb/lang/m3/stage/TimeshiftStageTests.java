@@ -15,6 +15,7 @@ import org.opensearch.core.xcontent.ToXContent;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.common.xcontent.XContentFactory;
 import org.opensearch.test.AbstractWireSerializingTestCase;
+import org.opensearch.tsdb.TestUtils;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Labels;
@@ -121,11 +122,8 @@ public class TimeshiftStageTests extends AbstractWireSerializingTestCase<Timeshi
     }
 
     public void testProcessWithNullInput() {
-        // Arrange
         TimeshiftStage timeshiftStage = new TimeshiftStage(TimeValue.timeValueHours(1).getMillis());
-
-        // Act & Assert
-        assertThrows(NullPointerException.class, () -> timeshiftStage.process(null));
+        TestUtils.assertNullInputThrowsException(timeshiftStage, "timeshift");
     }
 
     public void testProcessWithEmptyTimeSeries() {

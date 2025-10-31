@@ -50,10 +50,10 @@ import java.util.Map;
  *   <li><strong>Comparison:</strong> Make metrics with different steps comparable</li>
  * </ul>
  */
-@PipelineStageAnnotation(name = "scaleToSeconds")
+@PipelineStageAnnotation(name = ScaleToSecondsStage.NAME)
 public class ScaleToSecondsStage implements UnaryPipelineStage {
     /** The name identifier for this pipeline stage type. */
-    public static final String NAME = "scaleToSeconds";
+    public static final String NAME = "scale_to_seconds";
 
     private final long seconds;
 
@@ -73,7 +73,7 @@ public class ScaleToSecondsStage implements UnaryPipelineStage {
     @Override
     public List<TimeSeries> process(List<TimeSeries> input) {
         if (input == null) {
-            throw new NullPointerException("Input cannot be null");
+            throw new NullPointerException(getName() + " stage received null input");
         }
 
         if (input.isEmpty()) {

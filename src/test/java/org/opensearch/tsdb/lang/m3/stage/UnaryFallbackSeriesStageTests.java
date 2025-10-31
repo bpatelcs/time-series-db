@@ -11,6 +11,7 @@ import org.opensearch.common.xcontent.XContentFactory;
 import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.test.AbstractWireSerializingTestCase;
+import org.opensearch.tsdb.TestUtils;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Sample;
@@ -77,18 +78,11 @@ public class UnaryFallbackSeriesStageTests extends AbstractWireSerializingTestCa
     }
 
     /**
-     * Test that when input is null, a constant series is returned.
+     * Test that when input is null, an exception is thrown.
      */
-    public void testNullInputReturnsConstantSeries() {
+    public void testNullInputThrowsException() {
         FallbackSeriesUnaryStage stage = new FallbackSeriesUnaryStage(3.0, 0L, 10L, 5L);
-
-        List<TimeSeries> result = stage.process(null);
-
-        assertEquals(1, result.size());
-        TimeSeries constantSeries = result.get(0);
-        // Verify labels are empty (no "fallback" label)
-        assertEquals("", constantSeries.getLabels().get("fallback"));
-        assertEquals(3.0, ((FloatSample) constantSeries.getSamples().get(0)).getValue(), 0.001);
+        TestUtils.assertNullInputThrowsException(stage, "fallback_series_unary");
     }
 
     /**

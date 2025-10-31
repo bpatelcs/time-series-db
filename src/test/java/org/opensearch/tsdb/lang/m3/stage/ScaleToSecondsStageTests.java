@@ -11,6 +11,7 @@ import org.opensearch.common.xcontent.XContentFactory;
 import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.test.AbstractWireSerializingTestCase;
+import org.opensearch.tsdb.TestUtils;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Sample;
@@ -110,7 +111,7 @@ public class ScaleToSecondsStageTests extends AbstractWireSerializingTestCase<Sc
 
     public void testScaleToSecondsNullInput() {
         ScaleToSecondsStage stage = new ScaleToSecondsStage(5);
-        expectThrows(NullPointerException.class, () -> stage.process(null));
+        TestUtils.assertNullInputThrowsException(stage, "scale_to_seconds");
     }
 
     public void testConstructorInvalidSeconds() {
@@ -120,7 +121,7 @@ public class ScaleToSecondsStageTests extends AbstractWireSerializingTestCase<Sc
 
     public void testGetName() {
         ScaleToSecondsStage stage = new ScaleToSecondsStage(10);
-        assertEquals("scaleToSeconds", stage.getName());
+        assertEquals("scale_to_seconds", stage.getName());
     }
 
     public void testFromArgs() {

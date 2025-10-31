@@ -31,7 +31,7 @@ import java.util.Map;
 @PipelineStageAnnotation(name = FallbackSeriesBinaryStage.NAME)
 public class FallbackSeriesBinaryStage implements BinaryPipelineStage {
     /** The name of this pipeline stage. */
-    public static final String NAME = "fallbackSeriesBinary";
+    public static final String NAME = "fallback_series_binary";
 
     private final String rightOperandReferenceName;
 
@@ -63,8 +63,14 @@ public class FallbackSeriesBinaryStage implements BinaryPipelineStage {
      */
     @Override
     public List<TimeSeries> process(List<TimeSeries> left, List<TimeSeries> right) {
+        if (left == null) {
+            throw new NullPointerException(getName() + " stage received null left input");
+        }
+        if (right == null) {
+            throw new NullPointerException(getName() + " stage received null right input");
+        }
         // If left series is empty, return right (fallback), otherwise return left
-        if (left == null || left.isEmpty()) {
+        if (left.isEmpty()) {
             return right;
         }
         return left;

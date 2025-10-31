@@ -59,7 +59,7 @@
         "buckets_path" : [ ],
         "stages" : [
           {
-            "type" : "histogramPercentile",
+            "type" : "histogram_percentile",
             "bucket_id" : "bucketid",
             "bucket_range" : "bucket",
             "percentiles" : [

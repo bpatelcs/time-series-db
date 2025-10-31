@@ -39,6 +39,9 @@ public class RemoveEmptyStage implements UnaryPipelineStage {
 
     @Override
     public List<TimeSeries> process(List<TimeSeries> input) {
+        if (input == null) {
+            throw new NullPointerException(getName() + " stage received null input");
+        }
         return input.stream().filter(series -> !series.getSamples().isEmpty()).collect(Collectors.toList());
     }
 

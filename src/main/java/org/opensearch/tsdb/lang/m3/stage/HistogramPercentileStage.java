@@ -39,11 +39,11 @@ import java.util.regex.Pattern;
  *
  * Note : It is not an AbstractGroupingStage as group keys are dynamic based on what existing labels are in the input time series.
  */
-@PipelineStageAnnotation(name = "histogramPercentile")
+@PipelineStageAnnotation(name = HistogramPercentileStage.NAME)
 public class HistogramPercentileStage implements UnaryPipelineStage {
 
     /** The name identifier for this stage. */
-    public static final String NAME = "histogramPercentile";
+    public static final String NAME = "histogram_percentile";
     /** The name of bucket_id field when constructing from Args*/
     public static final String BUCKET_ID = "bucket_id";
 
@@ -91,6 +91,9 @@ public class HistogramPercentileStage implements UnaryPipelineStage {
 
     @Override
     public List<TimeSeries> process(List<TimeSeries> input) {
+        if (input == null) {
+            throw new NullPointerException(getName() + " stage received null input");
+        }
         if (input.isEmpty()) {
             return input;
         }

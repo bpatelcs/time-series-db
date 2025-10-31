@@ -189,7 +189,7 @@
         "buckets_path" : [ ],
         "stages" : [
           {
-            "type" : "fallbackSeriesBinary",
+            "type" : "fallback_series_binary",
             "right_op_reference" : "1"
           }
         ],

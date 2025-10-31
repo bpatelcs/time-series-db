@@ -11,6 +11,7 @@ import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.common.xcontent.XContentFactory;
 import org.opensearch.test.AbstractWireSerializingTestCase;
+import org.opensearch.tsdb.TestUtils;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Sample;
@@ -141,7 +142,7 @@ public class IsNonNullStageTests extends AbstractWireSerializingTestCase<IsNonNu
      */
     public void testNullInput() {
         IsNonNullStage stage = new IsNonNullStage();
-        assertThrows(NullPointerException.class, () -> stage.process(null));
+        TestUtils.assertNullInputThrowsException(stage, "is_non_null");
     }
 
     /**
@@ -149,7 +150,7 @@ public class IsNonNullStageTests extends AbstractWireSerializingTestCase<IsNonNu
      */
     public void testGetName() {
         IsNonNullStage stage = new IsNonNullStage();
-        assertEquals("isNonNull", stage.getName());
+        assertEquals("is_non_null", stage.getName());
     }
 
     /**
@@ -173,7 +174,7 @@ public class IsNonNullStageTests extends AbstractWireSerializingTestCase<IsNonNu
     public void testFromArgs() {
         Map<String, Object> args = new HashMap<>();
         IsNonNullStage stage = IsNonNullStage.fromArgs(args);
-        assertEquals("isNonNull", stage.getName());
+        assertEquals("is_non_null", stage.getName());
     }
 
     /**
@@ -189,11 +190,11 @@ public class IsNonNullStageTests extends AbstractWireSerializingTestCase<IsNonNu
      */
     public void testCreateWithFactory() {
         Map<String, Object> args = Map.of();
-        PipelineStage stage = PipelineStageFactory.createWithArgs("isNonNull", args);
+        PipelineStage stage = PipelineStageFactory.createWithArgs("is_non_null", args);
 
         assertNotNull(stage);
         assertTrue(stage instanceof IsNonNullStage);
-        assertEquals("isNonNull", stage.getName());
+        assertEquals("is_non_null", stage.getName());
     }
 
     /**

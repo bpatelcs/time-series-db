@@ -242,21 +242,21 @@ public class KeepLastValueStageTests extends AbstractWireSerializingTestCase<Kee
         // Test with empty args - should create unlimited keepLastValue
         Map<String, Object> emptyArgs = new HashMap<>();
         KeepLastValueStage unlimited = KeepLastValueStage.fromArgs(emptyArgs);
-        assertEquals("keepLastValue", unlimited.getName());
+        assertEquals("keep_last_value", unlimited.getName());
         assertNull(unlimited.getLookBackWindow());
 
         // Test with null look_back_window - should create unlimited keepLastValue
         Map<String, Object> nullWindowArgs = new HashMap<>();
         nullWindowArgs.put(KeepLastValueStage.LOOK_BACK_WINDOW, null);
         KeepLastValueStage nullWindow = KeepLastValueStage.fromArgs(nullWindowArgs);
-        assertEquals("keepLastValue", nullWindow.getName());
+        assertEquals("keep_last_value", nullWindow.getName());
         assertNull(nullWindow.getLookBackWindow());
 
         // Test with numeric value
         Map<String, Object> numericArgs = new HashMap<>();
         numericArgs.put(KeepLastValueStage.LOOK_BACK_WINDOW, 300000L);
         KeepLastValueStage numericWindow = KeepLastValueStage.fromArgs(numericArgs);
-        assertEquals("keepLastValue", numericWindow.getName());
+        assertEquals("keep_last_value", numericWindow.getName());
         assertNotNull(numericWindow.getLookBackWindow());
         assertEquals(300000L, numericWindow.getLookBackWindow().longValue()); // 5 minutes = 300000ms
 
@@ -264,7 +264,7 @@ public class KeepLastValueStageTests extends AbstractWireSerializingTestCase<Kee
         Map<String, Object> stringArgs = new HashMap<>();
         stringArgs.put(KeepLastValueStage.LOOK_BACK_WINDOW, "7200000");
         KeepLastValueStage stringWindow = KeepLastValueStage.fromArgs(stringArgs);
-        assertEquals("keepLastValue", stringWindow.getName());
+        assertEquals("keep_last_value", stringWindow.getName());
         assertNotNull(stringWindow.getLookBackWindow());
         assertEquals(7200000L, stringWindow.getLookBackWindow().longValue()); // 2 hours = 7200000ms
 
@@ -314,6 +314,14 @@ public class KeepLastValueStageTests extends AbstractWireSerializingTestCase<Kee
         millisBuilder.endObject();
         String millisJson = millisBuilder.toString();
         assertEquals("KeepLastValue with 500ms window should produce correct JSON", "{\"look_back_window\":500}", millisJson);
+    }
+
+    /**
+     * Test KeepLastValueStage with null input throws exception.
+     */
+    public void testNullInputThrowsException() {
+        KeepLastValueStage stage = new KeepLastValueStage();
+        TestUtils.assertNullInputThrowsException(stage, "keep_last_value");
     }
 
     @Override

@@ -29,7 +29,7 @@ import java.util.Objects;
 @PipelineStageAnnotation(name = AliasByTagsStage.NAME)
 public class AliasByTagsStage implements UnaryPipelineStage {
     /** The name identifier for this pipeline stage. */
-    public static final String NAME = "aliasByTags";
+    public static final String NAME = "alias_by_tags";
 
     private final List<String> tagNames;
 
@@ -54,6 +54,9 @@ public class AliasByTagsStage implements UnaryPipelineStage {
 
     @Override
     public List<TimeSeries> process(List<TimeSeries> input) {
+        if (input == null) {
+            throw new NullPointerException(getName() + " stage received null input");
+        }
         List<TimeSeries> result = new ArrayList<>(input.size());
         for (TimeSeries ts : input) {
             String resolvedAlias = buildAliasFromTags(tagNames, ts.getLabels());

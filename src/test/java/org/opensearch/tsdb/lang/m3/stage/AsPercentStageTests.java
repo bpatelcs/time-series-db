@@ -14,6 +14,7 @@ import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.xcontent.ToXContent;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.test.AbstractWireSerializingTestCase;
+import org.opensearch.tsdb.TestUtils;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Sample;
@@ -434,5 +435,13 @@ public class AsPercentStageTests extends AbstractWireSerializingTestCase<AsPerce
     @Override
     protected AsPercentStage createTestInstance() {
         return new AsPercentStage(randomAlphaOfLengthBetween(3, 10), randomBoolean() ? null : Arrays.asList("service", "region"));
+    }
+
+    public void testNullInputsThrowExceptions() {
+        AsPercentStage stage = new AsPercentStage("right_series");
+        List<TimeSeries> nonNullInput = List.of(
+            new TimeSeries(List.of(new FloatSample(1000L, 10.0)), ByteLabels.emptyLabels(), 1000L, 1000L, 1000L, null)
+        );
+        TestUtils.assertBinaryNullInputsThrowExceptions(stage, nonNullInput, "as_percent");
     }
 }

@@ -78,7 +78,7 @@ public class ValueFilterStage implements UnaryPipelineStage {
     @Override
     public List<TimeSeries> process(List<TimeSeries> input) {
         if (input == null) {
-            throw new NullPointerException("Input cannot be null");
+            throw new NullPointerException(getName() + " stage received null input");
         }
         List<TimeSeries> result = new ArrayList<>();
         for (TimeSeries series : input) {

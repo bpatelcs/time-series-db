@@ -61,10 +61,10 @@ import java.util.Map;
  * </ul>
  *
  */
-@PipelineStageAnnotation(name = "isNonNull")
+@PipelineStageAnnotation(name = IsNonNullStage.NAME)
 public class IsNonNullStage implements UnaryPipelineStage {
     /** The name identifier for this pipeline stage. */
-    public static final String NAME = "isNonNull";
+    public static final String NAME = "is_non_null";
 
     /**
      * Constructor for isNonNull stage.
@@ -81,7 +81,7 @@ public class IsNonNullStage implements UnaryPipelineStage {
     @Override
     public List<TimeSeries> process(List<TimeSeries> input) {
         if (input == null) {
-            throw new NullPointerException("Input cannot be null");
+            throw new NullPointerException(getName() + " stage received null input");
         }
 
         if (input.isEmpty()) {

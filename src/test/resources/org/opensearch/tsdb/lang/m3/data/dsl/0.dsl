@@ -105,7 +105,7 @@
             "type" : "max"
           },
           {
-            "type" : "keepLastValue"
+            "type" : "keep_last_value"
           },
           {
             "type" : "value_filter",

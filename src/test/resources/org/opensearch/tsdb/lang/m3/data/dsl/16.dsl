@@ -46,7 +46,7 @@
         "step" : 100000,
         "stages" : [
           {
-            "type" : "fallbackSeriesUnary",
+            "type" : "fallback_series_unary",
             "fallbackValue" : 1.0,
             "minTimestamp" : 1000000000,
             "maxTimestamp" : 1001000000,

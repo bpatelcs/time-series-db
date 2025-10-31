@@ -36,7 +36,7 @@ import java.util.Map;
 @PipelineStageAnnotation(name = FallbackSeriesUnaryStage.NAME)
 public class FallbackSeriesUnaryStage implements UnaryPipelineStage {
     /** The name of this pipeline stage. */
-    public static final String NAME = "fallbackSeriesUnary";
+    public static final String NAME = "fallback_series_unary";
 
     private final double fallbackValue;
     private final long minTimestamp;
@@ -79,8 +79,11 @@ public class FallbackSeriesUnaryStage implements UnaryPipelineStage {
      */
     @Override
     public List<TimeSeries> process(List<TimeSeries> input) {
-        // If input is empty or null, create a constant series
-        if (input == null || input.isEmpty()) {
+        if (input == null) {
+            throw new NullPointerException(getName() + " stage received null input");
+        }
+        // If input is empty, create a constant series
+        if (input.isEmpty()) {
             return createConstantSeries();
         }
         return input;

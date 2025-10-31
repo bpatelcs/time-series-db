@@ -26,6 +26,7 @@ import java.util.Map;
 
 import static org.opensearch.core.xcontent.ToXContent.EMPTY_PARAMS;
 import static org.opensearch.tsdb.TestUtils.assertSamplesEqual;
+import static org.opensearch.tsdb.TestUtils.assertNullInputThrowsException;
 
 public class TransformNullStageTests extends AbstractWireSerializingTestCase<TransformNullStage> {
 
@@ -271,5 +272,10 @@ public class TransformNullStageTests extends AbstractWireSerializingTestCase<Tra
     @Override
     protected Writeable.Reader<TransformNullStage> instanceReader() {
         return TransformNullStage::readFrom;
+    }
+
+    public void testNullInputThrowsException() {
+        TransformNullStage stage = new TransformNullStage(0.0);
+        assertNullInputThrowsException(stage, "transform_null");
     }
 }

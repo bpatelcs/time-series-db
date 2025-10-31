@@ -11,6 +11,7 @@ import org.opensearch.common.xcontent.XContentFactory;
 import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.test.AbstractWireSerializingTestCase;
+import org.opensearch.tsdb.TestUtils;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Sample;
@@ -69,21 +70,16 @@ public class BinaryFallbackSeriesStageTests extends AbstractWireSerializingTestC
     }
 
     /**
-     * Test that when left series is null, right series is returned. TODO: align on null behavior
+     * Test that null inputs throw exceptions.
      */
-    public void testNullLeftReturnsRight() {
+    public void testNullInputsThrowExceptions() {
         FallbackSeriesBinaryStage stage = new FallbackSeriesBinaryStage("fallback_ref");
 
-        List<Sample> rightSamples = List.of(new FloatSample(0L, 5.0), new FloatSample(10L, 10.0));
+        List<Sample> samples = List.of(new FloatSample(0L, 5.0), new FloatSample(10L, 10.0));
+        ByteLabels labels = ByteLabels.fromStrings("name", "test");
+        TimeSeries series = new TimeSeries(samples, labels, 0L, 10L, 10L, null);
 
-        ByteLabels rightLabels = ByteLabels.fromStrings("name", "fallback");
-        TimeSeries rightSeries = new TimeSeries(rightSamples, rightLabels, 0L, 10L, 10L, null);
-
-        List<TimeSeries> result = stage.process(null, List.of(rightSeries));
-
-        assertEquals(1, result.size());
-        assertEquals("fallback", result.get(0).getLabels().get("name"));
-        assertSamplesEqual("Right series samples should match", rightSamples, result.get(0).getSamples());
+        TestUtils.assertBinaryNullInputsThrowExceptions(stage, List.of(series), "fallback_series_binary");
     }
 
     /**

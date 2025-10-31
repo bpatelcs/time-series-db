@@ -46,6 +46,9 @@ public class AliasStage implements UnaryPipelineStage {
 
     @Override
     public List<TimeSeries> process(List<TimeSeries> input) {
+        if (input == null) {
+            throw new NullPointerException(getName() + " stage received null input");
+        }
         for (TimeSeries ts : input) {
             String resolvedAlias = resolveAliasPattern(aliasPattern, ts.getLabelsMap());
             // TODO: should this create a copy of the time series? or ok to mutate in place?

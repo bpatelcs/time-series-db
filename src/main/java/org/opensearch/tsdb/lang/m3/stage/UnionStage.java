@@ -50,6 +50,12 @@ public class UnionStage implements BinaryPipelineStage {
      */
     @Override
     public List<TimeSeries> process(List<TimeSeries> left, List<TimeSeries> right) {
+        if (left == null) {
+            throw new NullPointerException(getName() + " stage received null left input");
+        }
+        if (right == null) {
+            throw new NullPointerException(getName() + " stage received null right input");
+        }
         left.addAll(right);
         return left;
     }

@@ -62,6 +62,9 @@ public abstract class AbstractGroupingStage implements UnaryPipelineStage {
 
     @Override
     public List<TimeSeries> process(List<TimeSeries> input) {
+        if (input == null) {
+            throw new NullPointerException(getName() + " stage received null input");
+        }
         return process(input, true);
     }
 
@@ -74,6 +77,9 @@ public abstract class AbstractGroupingStage implements UnaryPipelineStage {
      * @return The processed time series
      */
     public List<TimeSeries> process(List<TimeSeries> input, boolean materialize) {
+        if (input == null) {
+            throw new NullPointerException(getName() + " stage received null input");
+        }
         if (input.isEmpty()) {
             return input;
         }

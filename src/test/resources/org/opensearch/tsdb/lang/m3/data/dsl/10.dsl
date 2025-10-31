@@ -82,7 +82,7 @@
             "type" : "per_second"
           },
           {
-            "type" : "aliasByTags",
+            "type" : "alias_by_tags",
             "tag_names" : [
               "service",
               "region"

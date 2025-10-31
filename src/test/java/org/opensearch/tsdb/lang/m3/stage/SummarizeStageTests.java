@@ -22,6 +22,7 @@ import java.util.Map;
 
 import static org.opensearch.tsdb.TestUtils.assertSamplesEqual;
 import static org.opensearch.tsdb.TestUtils.findSeriesByLabel;
+import static org.opensearch.tsdb.TestUtils.assertNullInputThrowsException;
 
 public class SummarizeStageTests extends AbstractWireSerializingTestCase<SummarizeStage> {
 
@@ -437,6 +438,11 @@ public class SummarizeStageTests extends AbstractWireSerializingTestCase<Summari
 
         String json = builder.toString();
         assertEquals("{\"interval\":90000,\"function\":\"last\",\"alignToFrom\":true}", json);
+    }
+
+    public void testNullInputThrowsException() {
+        SummarizeStage stage = new SummarizeStage(30000, WindowAggregationType.SUM, false);
+        assertNullInputThrowsException(stage, "summarize");
     }
 
 }

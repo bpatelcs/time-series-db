@@ -14,6 +14,7 @@ import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.xcontent.ToXContent;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.test.AbstractWireSerializingTestCase;
+import org.opensearch.tsdb.TestUtils;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Sample;
@@ -136,6 +137,17 @@ public class UnionStageTests extends AbstractWireSerializingTestCase<UnionStage>
     @Override
     protected Writeable.Reader<UnionStage> instanceReader() {
         return UnionStage::readFrom;
+    }
+
+    /**
+     * Test UnionStage with null inputs throws exceptions.
+     */
+    public void testNullInputsThrowExceptions() {
+        UnionStage stage = new UnionStage("right_series");
+        List<TimeSeries> nonNullInput = List.of(
+            new TimeSeries(List.of(new FloatSample(1000L, 10.0)), ByteLabels.emptyLabels(), 1000L, 1000L, 1000L, null)
+        );
+        TestUtils.assertBinaryNullInputsThrowExceptions(stage, nonNullInput, "union");
     }
 
     @Override

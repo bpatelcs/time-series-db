@@ -14,6 +14,7 @@ import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.xcontent.ToXContent;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.test.AbstractWireSerializingTestCase;
+import org.opensearch.tsdb.TestUtils;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Labels;
@@ -66,12 +67,8 @@ public class SortStageTests extends AbstractWireSerializingTestCase<SortStage> {
     }
 
     public void testProcessWithNullInput() {
-        // Arrange
         SortStage sortStage = new SortStage(SortStage.SortBy.AVG);
-
-        // Act & Assert
-        NullPointerException exception = expectThrows(NullPointerException.class, () -> sortStage.process(null));
-        assertEquals("Input cannot be null", exception.getMessage());
+        TestUtils.assertNullInputThrowsException(sortStage, "sort");
     }
 
     public void testProcessSortByAvgDesc() {

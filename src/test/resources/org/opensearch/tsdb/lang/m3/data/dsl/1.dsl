@@ -102,7 +102,7 @@
             "function" : "sum"
           },
           {
-            "type" : "keepLastValue",
+            "type" : "keep_last_value",
             "look_back_window" : 7200000
           }
         ],

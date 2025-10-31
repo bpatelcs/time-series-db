@@ -9,6 +9,8 @@ package org.opensearch.tsdb;
 
 import org.opensearch.tsdb.core.model.Sample;
 import org.opensearch.tsdb.query.aggregator.TimeSeries;
+import org.opensearch.tsdb.query.stage.BinaryPipelineStage;
+import org.opensearch.tsdb.query.stage.UnaryPipelineStage;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
@@ -22,6 +24,7 @@ import java.util.TreeMap;
 import java.util.stream.Stream;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
 
 /**
  * Utility functions for tests.
@@ -117,5 +120,99 @@ public class TestUtils {
             }
         }
         throw new AssertionError("Time series with label " + labelKey + "=" + labelValue + " not found");
+    }
+
+    /**
+     * Test that a unary pipeline stage throws NullPointerException when given null input.
+     * This utility method verifies that the stage properly validates its input and throws
+     * an exception with the expected message format: "{stage_name} stage received null input".
+     *
+     * @param stage The unary pipeline stage to test
+     * @param expectedStageName The expected stage name for the error message
+     * @throws AssertionError if the exception is not thrown or the message doesn't match
+     */
+    public static void assertNullInputThrowsException(UnaryPipelineStage stage, String expectedStageName) {
+        NullPointerException exception = assertThrows(
+            "Stage should throw NullPointerException for null input",
+            NullPointerException.class,
+            () -> stage.process(null)
+        );
+        assertEquals(
+            "Exception message should indicate null input with stage name",
+            expectedStageName + " stage received null input",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * Test that a binary pipeline stage throws NullPointerException when given null left input.
+     * This utility method verifies that the stage properly validates its left input and throws
+     * an exception with the expected message format: "{stage_name} stage received null left input".
+     *
+     * @param stage The binary pipeline stage to test
+     * @param rightInput The non-null right input to provide
+     * @param expectedStageName The expected stage name for the error message
+     * @throws AssertionError if the exception is not thrown or the message doesn't match
+     */
+    public static void assertNullLeftInputThrowsException(
+        BinaryPipelineStage stage,
+        List<TimeSeries> rightInput,
+        String expectedStageName
+    ) {
+        NullPointerException exception = assertThrows(
+            "Stage should throw NullPointerException for null left input",
+            NullPointerException.class,
+            () -> stage.process(null, rightInput)
+        );
+        assertEquals(
+            "Exception message should indicate null left input with stage name",
+            expectedStageName + " stage received null left input",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * Test that a binary pipeline stage throws NullPointerException when given null right input.
+     * This utility method verifies that the stage properly validates its right input and throws
+     * an exception with the expected message format: "{stage_name} stage received null right input".
+     *
+     * @param stage The binary pipeline stage to test
+     * @param leftInput The non-null left input to provide
+     * @param expectedStageName The expected stage name for the error message
+     * @throws AssertionError if the exception is not thrown or the message doesn't match
+     */
+    public static void assertNullRightInputThrowsException(
+        BinaryPipelineStage stage,
+        List<TimeSeries> leftInput,
+        String expectedStageName
+    ) {
+        NullPointerException exception = assertThrows(
+            "Stage should throw NullPointerException for null right input",
+            NullPointerException.class,
+            () -> stage.process(leftInput, null)
+        );
+        assertEquals(
+            "Exception message should indicate null right input with stage name",
+            expectedStageName + " stage received null right input",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * Test that a binary pipeline stage throws NullPointerException for both null left and null right inputs.
+     * This is a convenience method that calls both assertNullLeftInputThrowsException and assertNullRightInputThrowsException.
+     *
+     * @param stage The binary pipeline stage to test
+     * @param nonNullInput A non-null input list to use when testing the other input
+     * @param expectedStageName The expected stage name for the error messages
+     * @throws AssertionError if any of the exceptions are not thrown or messages don't match
+     */
+    public static void assertBinaryNullInputsThrowExceptions(
+        BinaryPipelineStage stage,
+        List<TimeSeries> nonNullInput,
+        String expectedStageName
+    ) {
+        assertNullLeftInputThrowsException(stage, nonNullInput, expectedStageName);
+        assertNullRightInputThrowsException(stage, nonNullInput, expectedStageName);
     }
 }

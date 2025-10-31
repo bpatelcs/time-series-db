@@ -53,7 +53,7 @@ import java.util.Objects;
 @PipelineStageAnnotation(name = KeepLastValueStage.NAME)
 public class KeepLastValueStage implements UnaryPipelineStage {
     /** The name of this pipeline stage. */
-    public static final String NAME = "keepLastValue";
+    public static final String NAME = "keep_last_value";
 
     /**field name of look back window when constructing from args*/
     public static final String LOOK_BACK_WINDOW = "look_back_window";
@@ -77,6 +77,9 @@ public class KeepLastValueStage implements UnaryPipelineStage {
 
     @Override
     public List<TimeSeries> process(List<TimeSeries> input) {
+        if (input == null) {
+            throw new NullPointerException(getName() + " stage received null input");
+        }
         if (input.isEmpty()) {
             return input;
         }
