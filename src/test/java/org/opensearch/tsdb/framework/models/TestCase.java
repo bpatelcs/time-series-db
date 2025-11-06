@@ -12,8 +12,9 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 
 /**
- * Test case configuration for time series testing
+ * Test case configuration for time series testing.
+ * Supports multiple input data configurations to ingest data into different indices.
  */
-public record TestCase(@JsonProperty("name") String name, @JsonProperty("input_data") InputDataConfig inputData,
+public record TestCase(@JsonProperty("name") String name, @JsonProperty("input_data_list") List<InputDataConfig> inputDataList,
     @JsonProperty("queries") List<QueryConfig> queries, @JsonProperty("validation") ValidationConfig validation) {
 }

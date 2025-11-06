@@ -14,7 +14,7 @@ import org.opensearch.tsdb.framework.RestTimeSeriesTestFramework;
  *
  * This class runs two complementary tests:
  *
- *  E2E_m3ql_query_execution_rest_it.yaml: broad coverage of fetch,
+ *  e2e_m3ql_query_execution_rest_it.yaml: broad coverage of fetch,
  *       unions, aggregations (min/avg), pipelines (scale/sort/timeshift/perSecond),
  *       and error handling over synthetic data (linear/wave/decreasing/mixed/nulls).
  *
@@ -25,7 +25,7 @@ import org.opensearch.tsdb.framework.RestTimeSeriesTestFramework;
  */
 public class M3QLQueryCorrectnessRestIT extends RestTimeSeriesTestFramework {
 
-    private static final String E2E_M3QL_QUERY_EXECUTION_REST_IT = "test_cases/E2E_m3ql_query_execution_rest_it.yaml";
+    private static final String E2E_M3QL_QUERY_EXECUTION_REST_IT = "test_cases/e2e_m3ql_query_execution_rest_it.yaml";
     private static final String FUNCTIONAL_CORRECTNESS_REST_IT = "test_cases/functional_correctness_rest_it.yaml";
 
     /**

@@ -20,12 +20,14 @@ import org.opensearch.test.OpenSearchIntegTestCase;
 import org.opensearch.tsdb.core.mapping.Constants;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.framework.models.IndexConfig;
+import org.opensearch.tsdb.framework.models.InputDataConfig;
 import org.opensearch.tsdb.framework.models.TestCase;
 import org.opensearch.tsdb.framework.models.TestSetup;
 import org.opensearch.tsdb.framework.models.TimeSeriesSample;
 import org.opensearch.tsdb.utils.TSDBTestUtils;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -66,7 +68,7 @@ public abstract class TimeSeriesTestFramework extends OpenSearchIntegTestCase {
     protected TestSetup testSetup;
     protected TestCase testCase;
     protected SearchQueryExecutor queryExecutor;
-    protected IndexConfig indexConfig;
+    protected List<IndexConfig> indexConfigs;
 
     @Override
     public void setUp() throws Exception {
@@ -76,25 +78,39 @@ public abstract class TimeSeriesTestFramework extends OpenSearchIntegTestCase {
     }
 
     protected void initializeComponents() {
-        // Create the index config by merging test config with framework defaults
+        // Create the index configs by merging test config with framework defaults
         try {
             // Parse the default settings YAML
             ObjectMapper yamlMapper = new ObjectMapper(new YAMLFactory());
             Map<String, Object> defaultSettings = yamlMapper.readValue(DEFAULT_INDEX_SETTINGS_YAML, Map.class);
 
-            // Use test-specified name/shards/replicas or defaults
-            String indexName = testSetup != null && testSetup.indexConfig() != null && testSetup.indexConfig().name() != null
-                ? testSetup.indexConfig().name()
-                : "time_series_test";
-            int shards = testSetup != null && testSetup.indexConfig() != null ? testSetup.indexConfig().shards() : 1;
-            int replicas = testSetup != null && testSetup.indexConfig() != null ? testSetup.indexConfig().replicas() : 0;
-
             // Get the actual TSDB mapping from Constants (same as engine uses)
             // This ensures test mapping matches production mapping
             Map<String, Object> defaultMapping = parseMappingFromConstants();
 
-            // Create the final index config with test values and framework defaults
-            indexConfig = new IndexConfig(indexName, shards, replicas, defaultSettings, defaultMapping);
+            // Initialize index configs list
+            indexConfigs = new ArrayList<>();
+
+            // Validate that test setup and index configs are present
+            if (testSetup == null) {
+                throw new IllegalStateException("Test setup is required but was null");
+            }
+
+            if (testSetup.indexConfigs() == null || testSetup.indexConfigs().isEmpty()) {
+                throw new IllegalStateException("Test setup must specify at least one index configuration in index_configs");
+            }
+
+            // Validate and create index configs
+            for (IndexConfig testIndexConfig : testSetup.indexConfigs()) {
+                if (testIndexConfig.name() == null || testIndexConfig.name().trim().isEmpty()) {
+                    throw new IllegalArgumentException("Index configuration must specify a non-empty index name");
+                }
+
+                String indexName = testIndexConfig.name();
+                int shards = testIndexConfig.shards();
+                int replicas = testIndexConfig.replicas();
+                indexConfigs.add(new IndexConfig(indexName, shards, replicas, defaultSettings, defaultMapping));
+            }
         } catch (Exception e) {
             throw new RuntimeException("Failed to create index config", e);
         }
@@ -120,32 +136,44 @@ public abstract class TimeSeriesTestFramework extends OpenSearchIntegTestCase {
 
     protected void ingestTestData() throws Exception {
 
-        createTimeSeriesIndex();
+        // Create all indices
+        for (IndexConfig indexConfig : indexConfigs) {
+            createTimeSeriesIndex(indexConfig);
+        }
 
-        // Use TimeSeriesSampleGenerator to generate samples (handles both fixed interval and generic data)
-        List<TimeSeriesSample> samples = TimeSeriesSampleGenerator.generateSamples(testCase);
-        ingestSamples(samples);
+        // Ingest data into respective indices
+        if (testCase.inputDataList() != null && !testCase.inputDataList().isEmpty()) {
+            for (InputDataConfig inputDataConfig : testCase.inputDataList()) {
+                List<TimeSeriesSample> samples = TimeSeriesSampleGenerator.generateSamples(inputDataConfig);
+                ingestSamples(samples, inputDataConfig.indexName());
+            }
+        }
 
-        ensureGreen(indexConfig.name());
-        refresh(indexConfig.name());
-    }
-
-    protected void executeAndValidateQueries() throws Exception {
-        queryExecutor.executeAndValidateQueries(testCase, indexConfig.name());
-    }
-
-    protected void clearIndexIfExists() throws Exception {
-        String indexName = indexConfig.name();
-        if (client().admin().indices().prepareExists(indexName).get().isExists()) {
-            client().admin().indices().prepareDelete(indexName).get();
-            // Wait for the index to be fully deleted
-            assertBusy(
-                () -> { assertFalse("Index should be deleted", client().admin().indices().prepareExists(indexName).get().isExists()); }
-            );
+        // Ensure all indices are green and refreshed
+        for (IndexConfig indexConfig : indexConfigs) {
+            ensureGreen(indexConfig.name());
+            refresh(indexConfig.name());
         }
     }
 
-    protected void createTimeSeriesIndex() throws Exception {
+    protected void executeAndValidateQueries() throws Exception {
+        queryExecutor.executeAndValidateQueries(testCase);
+    }
+
+    protected void clearIndexIfExists() throws Exception {
+        for (IndexConfig indexConfig : indexConfigs) {
+            String indexName = indexConfig.name();
+            if (client().admin().indices().prepareExists(indexName).get().isExists()) {
+                client().admin().indices().prepareDelete(indexName).get();
+                // Wait for the index to be fully deleted
+                assertBusy(
+                    () -> { assertFalse("Index should be deleted", client().admin().indices().prepareExists(indexName).get().isExists()); }
+                );
+            }
+        }
+    }
+
+    protected void createTimeSeriesIndex(IndexConfig indexConfig) throws Exception {
         // Merge default settings with index configuration
         Map<String, Object> allSettings = new HashMap<>(indexConfig.settings());
         allSettings.put("index.number_of_shards", indexConfig.shards());
@@ -176,9 +204,10 @@ public abstract class TimeSeriesTestFramework extends OpenSearchIntegTestCase {
      * ensuring that test ingestion follows the same code path as production ingestion.
      *
      * @param samples The list of samples to ingest
+     * @param indexName The name of the index to ingest data into
      * @throws Exception if ingestion fails
      */
-    protected void ingestSamples(List<TimeSeriesSample> samples) throws Exception {
+    protected void ingestSamples(List<TimeSeriesSample> samples, String indexName) throws Exception {
         // Use bulk request for better performance, but still one document per sample
         BulkRequest bulkRequest = new BulkRequest();
 
@@ -192,7 +221,7 @@ public abstract class TimeSeriesTestFramework extends OpenSearchIntegTestCase {
             String documentJson = TSDBTestUtils.createTSDBDocumentJson(sample);
             String seriesId = byteLabels.toString();
 
-            IndexRequest request = new IndexRequest(indexConfig.name()).source(documentJson, XContentType.JSON).routing(seriesId);
+            IndexRequest request = new IndexRequest(indexName).source(documentJson, XContentType.JSON).routing(seriesId);
             bulkRequest.add(request);
         }
 
@@ -204,8 +233,8 @@ public abstract class TimeSeriesTestFramework extends OpenSearchIntegTestCase {
             }
         }
 
-        client().admin().indices().prepareFlush(indexConfig.name()).get();
-        client().admin().indices().prepareRefresh(indexConfig.name()).get();
+        client().admin().indices().prepareFlush(indexName).get();
+        client().admin().indices().prepareRefresh(indexName).get();
     }
 
     @Override

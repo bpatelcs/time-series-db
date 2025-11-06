@@ -52,12 +52,12 @@ public abstract class BaseQueryExecutor {
     /**
      * Execute and validate all queries in a test case.
      * Handles both success and failure scenarios based on expected status.
+     * Each query specifies its own target indices via the QueryConfig.indices field.
      *
      * @param testCase The test case containing queries to execute
-     * @param indexName The target index name for query execution
      * @throws Exception if query execution fails unexpectedly or validation fails
      */
-    protected void executeAndValidateQueries(TestCase testCase, String indexName) throws Exception {
+    protected void executeAndValidateQueries(TestCase testCase) throws Exception {
         if (testCase == null || testCase.queries() == null || testCase.queries().isEmpty()) {
             throw new IllegalStateException("Test case or queries not found");
         }
@@ -70,7 +70,9 @@ public abstract class BaseQueryExecutor {
             }
 
             try {
-                PromMatrixResponse response = executeQuery(query, indexName);
+                // Use the indices specified in the query config
+                String indices = query.indices();
+                PromMatrixResponse response = executeQuery(query, indices);
 
                 if (STATUS_FAILURE.equals(expectedStatus)) {
                     fail(query.name() + ": Expected failure but query succeeded");

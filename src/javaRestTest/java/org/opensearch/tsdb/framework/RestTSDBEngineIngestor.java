@@ -17,7 +17,7 @@ import org.opensearch.client.RestClient;
 import org.opensearch.index.mapper.IndexFieldMapper;
 import org.opensearch.rest.RestRequest;
 import org.opensearch.tsdb.core.model.ByteLabels;
-import org.opensearch.tsdb.framework.models.TestCase;
+import org.opensearch.tsdb.framework.models.InputDataConfig;
 import org.opensearch.tsdb.framework.models.TimeSeriesSample;
 import org.opensearch.tsdb.utils.TSDBTestUtils;
 
@@ -58,20 +58,25 @@ public record RestTSDBEngineIngestor(RestClient restClient) {
     private static final String BULK_FIELD_ROUTING = "routing";
 
     /**
-     * Ingest time series data from the test case into the specified index.
+     * Ingest time series data from multiple input data configurations into their respective indices.
+     * Each InputDataConfig specifies which index its data should go to.
      * Uses bulk API with batching for efficient ingestion.
      *
-     * @param testCase  The test case containing input data configuration
-     * @param indexName The target index for ingestion
+     * @param inputDataConfigs List of input data configurations with their target indices
      * @throws IOException If ingestion fails
      */
-    public void ingestData(TestCase testCase, String indexName) throws IOException {
-        if (testCase == null || testCase.inputData() == null) {
+    public void ingestDataToMultipleIndices(List<InputDataConfig> inputDataConfigs) throws IOException {
+        if (inputDataConfigs == null || inputDataConfigs.isEmpty()) {
             return;
         }
 
-        List<TimeSeriesSample> samples = TimeSeriesSampleGenerator.generateSamples(testCase);
-        ingestInBulk(samples, indexName, DEFAULT_BULK_SIZE);
+        for (InputDataConfig inputDataConfig : inputDataConfigs) {
+            if (inputDataConfig.indexName() == null || inputDataConfig.indexName().isEmpty()) {
+                throw new IllegalArgumentException("InputDataConfig must specify an index_name for data ingestion");
+            }
+            List<TimeSeriesSample> samples = TimeSeriesSampleGenerator.generateSamples(inputDataConfig);
+            ingestInBulk(samples, inputDataConfig.indexName(), DEFAULT_BULK_SIZE);
+        }
     }
 
     /**

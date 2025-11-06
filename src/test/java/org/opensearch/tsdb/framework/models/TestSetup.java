@@ -9,13 +9,15 @@ package org.opensearch.tsdb.framework.models;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.List;
 import java.util.Map;
 
 /**
- * Test setup configuration for time series testing
+ * Test setup configuration for time series testing.
+ * Supports multiple index configurations for complex test scenarios.
  * Note: Index mapping and settings are provided by the framework, only name/shards/replicas are configurable
  */
 public record TestSetup(@JsonProperty("name") String name, @JsonProperty("description") String description,
-    @JsonProperty("cluster_config") ClusterConfig clusterConfig, @JsonProperty("index_config") IndexConfig indexConfig,
+    @JsonProperty("cluster_config") ClusterConfig clusterConfig, @JsonProperty("index_configs") List<IndexConfig> indexConfigs,
     @JsonProperty("node_settings") Map<String, Object> nodeSettings) {
 }

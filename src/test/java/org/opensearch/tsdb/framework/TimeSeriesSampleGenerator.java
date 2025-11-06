@@ -11,7 +11,6 @@ import org.opensearch.tsdb.framework.models.InputDataConfig;
 import org.opensearch.tsdb.framework.models.TimeConfig;
 import org.opensearch.tsdb.framework.models.MetricData;
 import org.opensearch.tsdb.framework.models.FixedIntervalMetricData;
-import org.opensearch.tsdb.framework.models.TestCase;
 import org.opensearch.tsdb.framework.models.TimeSeriesSample;
 import org.opensearch.tsdb.utils.TimestampUtils;
 
@@ -38,8 +37,7 @@ public final class TimeSeriesSampleGenerator {
      * 1. Fixed interval data: Fixed timestamps with step intervals. Null values in the array represent missing data.
      * 2. Generic data: Explicit timestamp-value pairs. Missing data is represented by absence of data points.
      */
-    public static List<TimeSeriesSample> generateSamples(TestCase testCase) {
-        InputDataConfig inputDataConfig = testCase.inputData();
+    public static List<TimeSeriesSample> generateSamples(InputDataConfig inputDataConfig) {
         if (inputDataConfig == null) {
             return new ArrayList<>();
         }

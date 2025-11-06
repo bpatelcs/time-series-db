@@ -25,8 +25,11 @@ import java.util.List;
  *    - Each data point has an explicit timestamp-value pair
  *    - Missing data is represented by absence of data points (no entry for that time)
  *    - No null values needed - if there's no data at a time, simply don't include that timestamp
+ *
+ * The indexName field specifies which index this data should be ingested into.
+ * It must match one of the index names defined in the test setup's index_configs.
  */
-public record InputDataConfig(@JsonProperty("input_data_type") InputDataType inputDataType,
+public record InputDataConfig(@JsonProperty("index_name") String indexName, @JsonProperty("input_data_type") InputDataType inputDataType,
     @JsonProperty("time_config") TimeConfig timeConfig, @JsonProperty("regular_metrics") List<FixedIntervalMetricData> metrics,
     @JsonProperty("metrics") List<MetricData> genericMetrics) {
     /**

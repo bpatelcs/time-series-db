@@ -103,15 +103,28 @@ public abstract class RestTimeSeriesTestFramework extends OpenSearchRestTestCase
     protected void setupTest() throws IOException {
         validateTestInitialization();
 
-        if (testSetup.indexConfig() != null) {
-            createIndex(testSetup.indexConfig());
+        // Validate that index configs are present
+        if (testSetup.indexConfigs() == null || testSetup.indexConfigs().isEmpty()) {
+            throw new IllegalStateException("Test setup must specify at least one index configuration in index_configs");
         }
 
-        if (testCase.inputData() != null) {
-            ingestor.ingestData(testCase, testSetup.indexConfig().name());
+        // Create all indices and validate each has a name
+        for (IndexConfig indexConfig : testSetup.indexConfigs()) {
+            if (indexConfig.name() == null || indexConfig.name().trim().isEmpty()) {
+                throw new IllegalArgumentException("Index configuration must specify a non-empty index name");
+            }
+            createIndex(indexConfig);
         }
 
-        refreshIndex(testSetup.indexConfig().name());
+        // Ingest data into respective indices
+        if (testCase.inputDataList() != null && !testCase.inputDataList().isEmpty()) {
+            ingestor.ingestDataToMultipleIndices(testCase.inputDataList());
+        }
+
+        // Refresh all indices
+        for (IndexConfig indexConfig : testSetup.indexConfigs()) {
+            refreshIndex(indexConfig.name());
+        }
     }
 
     /**
@@ -122,7 +135,7 @@ public abstract class RestTimeSeriesTestFramework extends OpenSearchRestTestCase
      */
     protected void runBasicTest() throws Exception {
         setupTest();
-        queryExecutor.executeAndValidateQueries(testCase, testSetup.indexConfig().name());
+        queryExecutor.executeAndValidateQueries(testCase);
     }
 
     /**
