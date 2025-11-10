@@ -29,7 +29,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -229,6 +228,7 @@ public class Head {
         for (MemSeries series : seriesList) {
             MemSeries.ClosableChunkResult closeableChunkResult = series.getClosableChunks(maxTime, staleChunkExpiry);
 
+            var addedChunks = 0;
             for (MemChunk memChunk : closeableChunkResult.closableChunks()) {
                 try {
                     var added = closedChunkIndexManager.addMemChunk(series, memChunk);
@@ -238,6 +238,7 @@ public class Head {
                         break;
                     }
                     seriesToClosedChunks.computeIfAbsent(series, k -> new HashSet<>()).add(memChunk);
+                    addedChunks++;
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
@@ -246,7 +247,7 @@ public class Head {
             /*
                 If processed all chunks of a series.
              */
-            if (seriesToClosedChunks.getOrDefault(series, Collections.emptySet()).size() == closeableChunkResult.closableChunks().size()) {
+            if (addedChunks == closeableChunkResult.closableChunks().size()) {
                 if (closeableChunkResult.minSeqNo() < minSeqNo) {
                     minSeqNo = closeableChunkResult.minSeqNo();
                 }
