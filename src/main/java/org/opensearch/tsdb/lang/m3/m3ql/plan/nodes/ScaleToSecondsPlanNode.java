@@ -22,7 +22,7 @@ import java.util.Locale;
  */
 public class ScaleToSecondsPlanNode extends M3PlanNode {
 
-    private final long seconds;
+    private final double seconds;
 
     /**
      * Constructor for ScaleToSecondsPlanNode.
@@ -30,7 +30,7 @@ public class ScaleToSecondsPlanNode extends M3PlanNode {
      * @param id node id
      * @param seconds the target duration in seconds to scale values to
      */
-    public ScaleToSecondsPlanNode(int id, long seconds) {
+    public ScaleToSecondsPlanNode(int id, double seconds) {
         super(id);
         this.seconds = seconds;
     }
@@ -42,14 +42,14 @@ public class ScaleToSecondsPlanNode extends M3PlanNode {
 
     @Override
     public String getExplainName() {
-        return String.format(Locale.ROOT, "SCALE_TO_SECONDS(%d)", seconds);
+        return String.format(Locale.ROOT, "SCALE_TO_SECONDS(%f)", seconds);
     }
 
     /**
      * Returns the target seconds.
      * @return the target seconds
      */
-    public long getSeconds() {
+    public double getSeconds() {
         return seconds;
     }
 
@@ -69,7 +69,7 @@ public class ScaleToSecondsPlanNode extends M3PlanNode {
         if (!(childNodes.getFirst() instanceof ValueNode valueNode)) {
             throw new IllegalArgumentException("Argument to scaleToSeconds function should be a value node");
         }
-        long seconds = Long.parseLong(valueNode.getValue());
+        double seconds = Double.parseDouble(valueNode.getValue());
         return new ScaleToSecondsPlanNode(M3PlannerContext.generateId(), seconds);
     }
 }

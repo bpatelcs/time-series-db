@@ -20,16 +20,16 @@ public class ScaleToSecondsPlanNodeTests extends BasePlanNodeTests {
         ScaleToSecondsPlanNode node = new ScaleToSecondsPlanNode(1, 10);
 
         assertEquals(1, node.getId());
-        assertEquals(10, node.getSeconds());
-        assertEquals("SCALE_TO_SECONDS(10)", node.getExplainName());
+        assertEquals(10.0, node.getSeconds(), 0.0001);
+        assertEquals("SCALE_TO_SECONDS(10.000000)", node.getExplainName());
         assertTrue(node.getChildren().isEmpty());
     }
 
     public void testScaleToSecondsPlanNodeWithLargeSeconds() {
         ScaleToSecondsPlanNode node = new ScaleToSecondsPlanNode(1, 3600);
 
-        assertEquals(3600, node.getSeconds());
-        assertEquals("SCALE_TO_SECONDS(3600)", node.getExplainName());
+        assertEquals(3600.0, node.getSeconds(), 0.0001);
+        assertEquals("SCALE_TO_SECONDS(3600.000000)", node.getExplainName());
     }
 
     public void testScaleToSecondsPlanNodeVisitorAccept() {
@@ -47,7 +47,7 @@ public class ScaleToSecondsPlanNodeTests extends BasePlanNodeTests {
 
         ScaleToSecondsPlanNode node = ScaleToSecondsPlanNode.of(functionNode);
 
-        assertEquals(2, node.getSeconds());
+        assertEquals(2.0, node.getSeconds(), 0.0001);
     }
 
     public void testScaleToSecondsPlanNodeFactoryMethodWithLargeValue() {
@@ -57,7 +57,7 @@ public class ScaleToSecondsPlanNodeTests extends BasePlanNodeTests {
 
         ScaleToSecondsPlanNode node = ScaleToSecondsPlanNode.of(functionNode);
 
-        assertEquals(60, node.getSeconds());
+        assertEquals(60.0, node.getSeconds(), 0.0001);
     }
 
     public void testScaleToSecondsPlanNodeFactoryMethodThrowsOnNoArguments() {

@@ -143,7 +143,7 @@ public class ScaleToSecondsStageTests extends AbstractWireSerializingTestCase<Sc
         builder.endObject();
 
         String json = builder.toString();
-        assertEquals("{\"seconds\":5}", json);
+        assertEquals("{\"seconds\":5.0}", json);
     }
 
     public void testEquals() {

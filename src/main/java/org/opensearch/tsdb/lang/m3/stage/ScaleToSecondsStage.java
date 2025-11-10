@@ -55,7 +55,7 @@ public class ScaleToSecondsStage implements UnaryPipelineStage {
     /** The name identifier for this pipeline stage type. */
     public static final String NAME = "scale_to_seconds";
 
-    private final long seconds;
+    private final double seconds;
 
     /**
      * Constructs a new ScaleToSecondsStage with the specified target seconds.
@@ -63,7 +63,7 @@ public class ScaleToSecondsStage implements UnaryPipelineStage {
      * @param seconds the target duration in seconds to scale values to
      * @throws IllegalArgumentException if seconds is less than or equal to 0
      */
-    public ScaleToSecondsStage(long seconds) {
+    public ScaleToSecondsStage(double seconds) {
         if (seconds <= 0) {
             throw new IllegalArgumentException("Seconds must be positive, got: " + seconds);
         }
@@ -131,7 +131,7 @@ public class ScaleToSecondsStage implements UnaryPipelineStage {
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        out.writeLong(seconds);
+        out.writeDouble(seconds);
     }
 
     /**
@@ -142,7 +142,7 @@ public class ScaleToSecondsStage implements UnaryPipelineStage {
      * @throws IOException if an I/O error occurs during deserialization
      */
     public static ScaleToSecondsStage readFrom(StreamInput in) throws IOException {
-        long seconds = in.readLong();
+        double seconds = in.readDouble();
         return new ScaleToSecondsStage(seconds);
     }
 
@@ -157,13 +157,13 @@ public class ScaleToSecondsStage implements UnaryPipelineStage {
         if (args == null) {
             throw new IllegalArgumentException("Args cannot be null");
         }
-        long seconds = ((Number) args.get("seconds")).longValue();
+        double seconds = ((Number) args.get("seconds")).doubleValue();
         return new ScaleToSecondsStage(seconds);
     }
 
     @Override
     public int hashCode() {
-        return Long.hashCode(seconds);
+        return Double.hashCode(seconds);
     }
 
     @Override
@@ -175,6 +175,6 @@ public class ScaleToSecondsStage implements UnaryPipelineStage {
             return false;
         }
         ScaleToSecondsStage that = (ScaleToSecondsStage) obj;
-        return seconds == that.seconds;
+        return Double.compare(seconds, that.seconds) == 0;
     }
 }
