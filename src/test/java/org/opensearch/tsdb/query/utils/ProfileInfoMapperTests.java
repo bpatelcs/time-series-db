@@ -41,7 +41,7 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertFalse("Should not contain profile field when profile results are null", json.contains("\"profile\""));
+        assertEquals("{}", json);
     }
 
     public void testExtractProfileInfo_WithEmptyProfileResults() throws IOException {
@@ -54,11 +54,10 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertFalse("Should not contain profile field when profile results are empty", json.contains("\"profile\""));
+        assertEquals("{}", json);
     }
 
     public void testExtractProfileInfo_WithValidDebugInfo() throws IOException {
-        // Arrange
         Map<String, Object> debugMap = new HashMap<>();
         debugMap.put(ProfileInfoMapper.STAGES_FIELD_NAME, "ScaleStage");
         debugMap.put(ProfileInfoMapper.TOTAL_CHUNKS, 100L);
@@ -82,15 +81,46 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertTrue("Should contain profile field", json.contains("\"profile\""));
-        assertTrue("Should contain m3ql field", json.contains("\"m3ql\""));
-        assertTrue("Should contain stages field", json.contains("\"stages\""));
-        assertTrue("Should contain totals field", json.contains("\"totals\""));
-        assertTrue("Should contain ScaleStage", json.contains("\"ScaleStage\""));
+        String expected = "{"
+            + "\"profile\":{"
+            + "\"totals\":{"
+            + "\"debug_info\":{"
+            + "\"total_chunks\":100,"
+            + "\"total_samples\":500,"
+            + "\"total_input_series\":10,"
+            + "\"total_output_series\":10,"
+            + "\"live_chunk_count\":50,"
+            + "\"closed_chunk_count\":50,"
+            + "\"live_doc_count\":200,"
+            + "\"closed_doc_count\":300,"
+            + "\"live_sample_count\":250,"
+            + "\"closed_sample_count\":250"
+            + "}"
+            + "},"
+            + "\"shards\":[{"
+            + "\"shard_id\":\"shard_0\","
+            + "\"aggregations\":[{"
+            + "\"debug_info\":{"
+            + "\"stages\":\"ScaleStage\","
+            + "\"total_chunks\":100,"
+            + "\"total_samples\":500,"
+            + "\"total_input_series\":10,"
+            + "\"total_output_series\":10,"
+            + "\"live_chunk_count\":50,"
+            + "\"closed_chunk_count\":50,"
+            + "\"live_doc_count\":200,"
+            + "\"closed_doc_count\":300,"
+            + "\"live_sample_count\":250,"
+            + "\"closed_sample_count\":250"
+            + "}"
+            + "}]"
+            + "}]"
+            + "}"
+            + "}";
+        assertEquals(expected, json);
     }
 
     public void testExtractProfileInfo_WithMultipleStages() throws IOException {
-        // Arrange
         Map<String, Object> debugMap = new HashMap<>();
         debugMap.put(ProfileInfoMapper.STAGES_FIELD_NAME, "ScaleStage,SumStage");
         debugMap.put(ProfileInfoMapper.TOTAL_CHUNKS, 150L);
@@ -113,7 +143,43 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertTrue("Should contain ScaleStage,SumStage", json.contains("\"ScaleStage,SumStage\""));
+        String expected = "{"
+            + "\"profile\":{"
+            + "\"totals\":{"
+            + "\"debug_info\":{"
+            + "\"total_chunks\":150,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":20,"
+            + "\"total_output_series\":5,"
+            + "\"live_chunk_count\":75,"
+            + "\"closed_chunk_count\":75,"
+            + "\"live_doc_count\":300,"
+            + "\"closed_doc_count\":450,"
+            + "\"live_sample_count\":375,"
+            + "\"closed_sample_count\":375"
+            + "}"
+            + "},"
+            + "\"shards\":[{"
+            + "\"shard_id\":\"shard_0\","
+            + "\"aggregations\":[{"
+            + "\"debug_info\":{"
+            + "\"stages\":\"ScaleStage,SumStage\","
+            + "\"total_chunks\":150,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":20,"
+            + "\"total_output_series\":5,"
+            + "\"live_chunk_count\":75,"
+            + "\"closed_chunk_count\":75,"
+            + "\"live_doc_count\":300,"
+            + "\"closed_doc_count\":450,"
+            + "\"live_sample_count\":375,"
+            + "\"closed_sample_count\":375"
+            + "}"
+            + "}]"
+            + "}]"
+            + "}"
+            + "}";
+        assertEquals(expected, json);
     }
 
     public void testExtractProfileInfo_WithDefaultStage() throws IOException {
@@ -131,7 +197,43 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertTrue("Should contain default stage", json.contains("\"default\""));
+        String expected = "{"
+            + "\"profile\":{"
+            + "\"totals\":{"
+            + "\"debug_info\":{"
+            + "\"total_chunks\":50,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":5,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "},"
+            + "\"shards\":[{"
+            + "\"shard_id\":\"shard_0\","
+            + "\"aggregations\":[{"
+            + "\"debug_info\":{"
+            + "\"stages\":\"fetch_only\","
+            + "\"total_chunks\":50,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":5,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "}]"
+            + "}]"
+            + "}"
+            + "}";
+        assertEquals(expected, json);
     }
 
     public void testExtractProfileInfo_WithEmptyStagesField() throws IOException {
@@ -149,7 +251,43 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertTrue("Should contain default stage when stages field is empty", json.contains("\"default\""));
+        String expected = "{"
+            + "\"profile\":{"
+            + "\"totals\":{"
+            + "\"debug_info\":{"
+            + "\"total_chunks\":50,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":0,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "},"
+            + "\"shards\":[{"
+            + "\"shard_id\":\"shard_0\","
+            + "\"aggregations\":[{"
+            + "\"debug_info\":{"
+            + "\"stages\":\"fetch_only\","
+            + "\"total_chunks\":50,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":0,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "}]"
+            + "}]"
+            + "}"
+            + "}";
+        assertEquals(expected, json);
     }
 
     public void testExtractProfileInfo_WithMultipleShards() throws IOException {
@@ -176,9 +314,57 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertTrue("Should aggregate stats across shards", json.contains("\"total_chunks\":300"));
-        assertTrue("Should aggregate input series", json.contains("\"total_input_series\":30"));
-        assertTrue("Should aggregate output series", json.contains("\"total_output_series\":30"));
+        String expected = "{"
+            + "\"profile\":{"
+            + "\"totals\":{"
+            + "\"debug_info\":{"
+            + "\"total_chunks\":300,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":30,"
+            + "\"total_output_series\":30,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "},"
+            + "\"shards\":[{"
+            + "\"shard_id\":\"shard_0\","
+            + "\"aggregations\":[{"
+            + "\"debug_info\":{"
+            + "\"stages\":\"ScaleStage\","
+            + "\"total_chunks\":100,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":10,"
+            + "\"total_output_series\":10,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "},{"
+            + "\"debug_info\":{"
+            + "\"stages\":\"ScaleStage\","
+            + "\"total_chunks\":200,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":20,"
+            + "\"total_output_series\":20,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "}]"
+            + "}]"
+            + "}"
+            + "}";
+        assertEquals(expected, json);
     }
 
     public void testExtractProfileInfo_WithNonTimeSeriesUnfoldAggregator() throws IOException {
@@ -196,7 +382,7 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertFalse("Should not extract debug info from non-TimeSeriesUnfoldAggregator", json.contains("\"m3ql\""));
+        assertEquals("{\"profile\":{}}", json);
     }
 
     public void testExtractProfileInfo_WithNullDebugMap() throws IOException {
@@ -209,13 +395,13 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertFalse("Should not add debug section when debug map is null", json.contains("\"m3ql\""));
+        assertEquals("{\"profile\":{}}", json);
     }
 
     public void testExtractProfileInfo_WithNonNumericValues() throws IOException {
         Map<String, Object> debugMap = new HashMap<>();
         debugMap.put(ProfileInfoMapper.STAGES_FIELD_NAME, "TestStage");
-        debugMap.put(ProfileInfoMapper.TOTAL_CHUNKS, "not_a_number"); // Non-numeric value
+        debugMap.put(ProfileInfoMapper.TOTAL_CHUNKS, "not_a_number");
         debugMap.put(ProfileInfoMapper.TOTAL_INPUT_SERIES, 10L);
 
         ProfileResult profileResult = createProfileResult(debugMap);
@@ -228,14 +414,49 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertTrue("Should handle non-numeric values gracefully", json.contains("\"total_chunks\":0"));
-        assertTrue("Should still process numeric values", json.contains("\"total_input_series\":10"));
+        String expected = "{"
+            + "\"profile\":{"
+            + "\"totals\":{"
+            + "\"debug_info\":{"
+            + "\"total_chunks\":0,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":10,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "},"
+            + "\"shards\":[{"
+            + "\"shard_id\":\"shard_0\","
+            + "\"aggregations\":[{"
+            + "\"debug_info\":{"
+            + "\"stages\":\"TestStage\","
+            + "\"total_chunks\":0,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":10,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "}]"
+            + "}]"
+            + "}"
+            + "}";
+        assertEquals(expected, json);
     }
 
     public void testExtractProfileInfo_WithIntegerValues() throws IOException {
         Map<String, Object> debugMap = new HashMap<>();
         debugMap.put(ProfileInfoMapper.STAGES_FIELD_NAME, "TestStage");
-        debugMap.put(ProfileInfoMapper.TOTAL_CHUNKS, 100); // Integer instead of Long
+        debugMap.put(ProfileInfoMapper.TOTAL_CHUNKS, 100);
         debugMap.put(ProfileInfoMapper.TOTAL_INPUT_SERIES, 10);
 
         ProfileResult profileResult = createProfileResult(debugMap);
@@ -248,8 +469,43 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertTrue("Should handle integer values", json.contains("\"total_chunks\":100"));
-        assertTrue("Should handle integer values", json.contains("\"total_input_series\":10"));
+        String expected = "{"
+            + "\"profile\":{"
+            + "\"totals\":{"
+            + "\"debug_info\":{"
+            + "\"total_chunks\":100,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":10,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "},"
+            + "\"shards\":[{"
+            + "\"shard_id\":\"shard_0\","
+            + "\"aggregations\":[{"
+            + "\"debug_info\":{"
+            + "\"stages\":\"TestStage\","
+            + "\"total_chunks\":100,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":10,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "}]"
+            + "}]"
+            + "}"
+            + "}";
+        assertEquals(expected, json);
     }
 
     public void testExtractProfileInfo_WithAllMetrics() throws IOException {
@@ -276,16 +532,43 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertTrue("Should contain total_chunks", json.contains("\"total_chunks\":1000"));
-        assertTrue("Should contain total_samples", json.contains("\"total_samples\":5000"));
-        assertTrue("Should contain total_input_series", json.contains("\"total_input_series\":100"));
-        assertTrue("Should contain total_output_series", json.contains("\"total_output_series\":50"));
-        assertTrue("Should contain live_chunk_count", json.contains("\"live_chunk_count\":500"));
-        assertTrue("Should contain closed_chunk_count", json.contains("\"closed_chunk_count\":500"));
-        assertTrue("Should contain live_doc_count", json.contains("\"live_doc_count\":2000"));
-        assertTrue("Should contain closed_doc_count", json.contains("\"closed_doc_count\":3000"));
-        assertTrue("Should contain live_sample_count", json.contains("\"live_sample_count\":2500"));
-        assertTrue("Should contain closed_sample_count", json.contains("\"closed_sample_count\":2500"));
+        String expected = "{"
+            + "\"profile\":{"
+            + "\"totals\":{"
+            + "\"debug_info\":{"
+            + "\"total_chunks\":1000,"
+            + "\"total_samples\":5000,"
+            + "\"total_input_series\":100,"
+            + "\"total_output_series\":50,"
+            + "\"live_chunk_count\":500,"
+            + "\"closed_chunk_count\":500,"
+            + "\"live_doc_count\":2000,"
+            + "\"closed_doc_count\":3000,"
+            + "\"live_sample_count\":2500,"
+            + "\"closed_sample_count\":2500"
+            + "}"
+            + "},"
+            + "\"shards\":[{"
+            + "\"shard_id\":\"shard_0\","
+            + "\"aggregations\":[{"
+            + "\"debug_info\":{"
+            + "\"stages\":\"CompleteStage\","
+            + "\"total_chunks\":1000,"
+            + "\"total_samples\":5000,"
+            + "\"total_input_series\":100,"
+            + "\"total_output_series\":50,"
+            + "\"live_chunk_count\":500,"
+            + "\"closed_chunk_count\":500,"
+            + "\"live_doc_count\":2000,"
+            + "\"closed_doc_count\":3000,"
+            + "\"live_sample_count\":2500,"
+            + "\"closed_sample_count\":2500"
+            + "}"
+            + "}]"
+            + "}]"
+            + "}"
+            + "}";
+        assertEquals(expected, json);
     }
 
     public void testExtractProfileInfo_WithMultipleDifferentStages() throws IOException {
@@ -310,15 +593,60 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertTrue("Should contain ScaleStage", json.contains("\"ScaleStage\""));
-        assertTrue("Should contain SumStage", json.contains("\"SumStage\""));
-        // Totals should aggregate both stages
-        assertTrue("Totals should aggregate both stages", json.contains("\"total_chunks\":300"));
-        assertTrue("Totals should aggregate both stages", json.contains("\"total_input_series\":30"));
+        String expected = "{"
+            + "\"profile\":{"
+            + "\"totals\":{"
+            + "\"debug_info\":{"
+            + "\"total_chunks\":300,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":30,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "},"
+            + "\"shards\":[{"
+            + "\"shard_id\":\"shard_0\","
+            + "\"aggregations\":[{"
+            + "\"debug_info\":{"
+            + "\"stages\":\"ScaleStage\","
+            + "\"total_chunks\":100,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":10,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "},{"
+            + "\"debug_info\":{"
+            + "\"stages\":\"SumStage\","
+            + "\"total_chunks\":200,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":20,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "}]"
+            + "}]"
+            + "}"
+            + "}";
+        assertEquals(expected, json);
     }
 
     public void testExtractProfileInfo_WithZeroValues() throws IOException {
-        // Arrange
         Map<String, Object> debugMap = new HashMap<>();
         debugMap.put(ProfileInfoMapper.STAGES_FIELD_NAME, "EmptyStage");
         debugMap.put(ProfileInfoMapper.TOTAL_CHUNKS, 0L);
@@ -335,15 +663,49 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertTrue("Should handle zero values", json.contains("\"total_chunks\":0"));
-        assertTrue("Should handle zero values", json.contains("\"total_input_series\":0"));
+        String expected = "{"
+            + "\"profile\":{"
+            + "\"totals\":{"
+            + "\"debug_info\":{"
+            + "\"total_chunks\":0,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":0,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "},"
+            + "\"shards\":[{"
+            + "\"shard_id\":\"shard_0\","
+            + "\"aggregations\":[{"
+            + "\"debug_info\":{"
+            + "\"stages\":\"EmptyStage\","
+            + "\"total_chunks\":0,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":0,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "}]"
+            + "}]"
+            + "}"
+            + "}";
+        assertEquals(expected, json);
     }
 
     public void testExtractProfileInfo_WithMissingFields() throws IOException {
         Map<String, Object> debugMap = new HashMap<>();
         debugMap.put(ProfileInfoMapper.STAGES_FIELD_NAME, "PartialStage");
         debugMap.put(ProfileInfoMapper.TOTAL_CHUNKS, 100L);
-        // Missing other fields
 
         ProfileResult profileResult = createProfileResult(debugMap);
         SearchResponse response = createSearchResponse(List.of(profileResult));
@@ -355,15 +717,44 @@ public class ProfileInfoMapperTests extends OpenSearchTestCase {
 
         builder.endObject();
         String json = builder.toString();
-        assertTrue("Should contain provided field", json.contains("\"total_chunks\":100"));
-        // Missing fields should default to 0
-        assertTrue("Missing fields should default to 0", json.contains("\"total_input_series\":0"));
-        assertTrue("Missing fields should default to 0", json.contains("\"total_output_series\":0"));
+        String expected = "{"
+            + "\"profile\":{"
+            + "\"totals\":{"
+            + "\"debug_info\":{"
+            + "\"total_chunks\":100,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":0,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "},"
+            + "\"shards\":[{"
+            + "\"shard_id\":\"shard_0\","
+            + "\"aggregations\":[{"
+            + "\"debug_info\":{"
+            + "\"stages\":\"PartialStage\","
+            + "\"total_chunks\":100,"
+            + "\"total_samples\":0,"
+            + "\"total_input_series\":0,"
+            + "\"total_output_series\":0,"
+            + "\"live_chunk_count\":0,"
+            + "\"closed_chunk_count\":0,"
+            + "\"live_doc_count\":0,"
+            + "\"closed_doc_count\":0,"
+            + "\"live_sample_count\":0,"
+            + "\"closed_sample_count\":0"
+            + "}"
+            + "}]"
+            + "}]"
+            + "}"
+            + "}";
+        assertEquals(expected, json);
     }
-
-    // ============================
-    // Helper Methods
-    // ============================
 
     private ProfileResult createProfileResult(Map<String, Object> debugMap) {
         return createProfileResult(TimeSeriesUnfoldAggregator.class.getName(), debugMap);
