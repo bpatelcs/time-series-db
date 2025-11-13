@@ -9,8 +9,11 @@ package org.opensearch.tsdb.query.utils;
 
 import org.opensearch.action.search.SearchResponse;
 import org.opensearch.core.xcontent.XContentBuilder;
+import org.opensearch.search.profile.NetworkTime;
 import org.opensearch.search.profile.ProfileResult;
 import org.opensearch.search.profile.ProfileShardResult;
+import org.opensearch.search.profile.fetch.FetchProfileShardResult;
+import org.opensearch.search.profile.query.QueryProfileShardResult;
 import org.opensearch.tsdb.query.aggregator.TimeSeriesUnfoldAggregator;
 
 import java.io.IOException;
@@ -38,6 +41,16 @@ public class ProfileInfoMapper {
     public static final String SHARDS_FIELD_NAME = "shards";
     public static final String SHARD_ID_FIELD_NAME = "shard_id";
     public static final String AGGREGATIONS_FIELD_NAME = "aggregations";
+    public static final String TIMING_INFO_FIELD_NAME = "timing_info";
+    public static final String QUERY_TIME = "query_time";
+    public static final String FETCH_TIME = "fetch_time";
+    public static final String NETWORK_INBOUND_TIME = "network_inbound_time";
+    public static final String NETWORK_OUTBOUND_TIME = "network_outbound_time";
+    public static final String INITIALIZE_TIME = "initialize_time";
+    public static final String COLLECT_TIME = "collect_time";
+    public static final String POST_COLLECTION_TIME = "post_collection_time";
+    public static final String BUILD_AGGREGATION_TIME = "build_aggregation_time";
+    public static final String REDUCE_TIME = "reduce_time";
 
     /**
      * Extract Profile Info from TimeSeriesUnfoldAggregator and construct debug info for every stage
@@ -49,15 +62,12 @@ public class ProfileInfoMapper {
         Map<String, ProfileShardResult> profileResults = response.getProfileResults();
         if (profileResults != null && !profileResults.isEmpty()) {
             // Aggregate debug info from all shards
-            DebugStats debugStats = new DebugStats();
+            ProfileStats debugStats = new ProfileStats();
             for (Map.Entry<String, ProfileShardResult> entry : profileResults.entrySet()) {
                 String shardId = entry.getKey();
                 ProfileShardResult shardResult = entry.getValue();
                 PerShardStats perShardStats = extractPerShardStats(shardId, shardResult, debugStats);
-                if (!perShardStats.aggregations.isEmpty()) {
-                    debugStats.shardStats.add(perShardStats);
-                }
-
+                debugStats.shardStats.add(perShardStats);
             }
 
             builder.startObject(PROFILE_FIELD_NAME);
@@ -68,9 +78,31 @@ public class ProfileInfoMapper {
         }
     }
 
-    private static PerShardStats extractPerShardStats(String shardId, ProfileShardResult shardResult, DebugStats debugStats) {
-        // Extract debug information per shard
+    private static PerShardStats extractPerShardStats(String shardId, ProfileShardResult shardResult, ProfileStats debugStats) {
         PerShardStats shardStats = new PerShardStats(shardId);
+
+        List<QueryProfileShardResult> queryResultsList = shardResult.getQueryProfileResults();
+        if (queryResultsList != null) {
+            for (QueryProfileShardResult queryResults : queryResultsList) {
+                for (ProfileResult result : queryResults.getQueryResults()) {
+                    shardStats.shardTimingStats.queryTime += result.getTime();
+                }
+            }
+        }
+
+        FetchProfileShardResult fetchResults = shardResult.getFetchProfileResult();
+        if (fetchResults != null) {
+            for (ProfileResult fetchResult : fetchResults.getFetchProfileResults()) {
+                shardStats.shardTimingStats.fetchTime += fetchResult.getTime();
+            }
+        }
+
+        NetworkTime networkTime = shardResult.getNetworkTime();
+        if (networkTime != null) {
+            shardStats.shardTimingStats.networkInboundTime = networkTime.getInboundNetworkTime();
+            shardStats.shardTimingStats.networkOutboundTime = networkTime.getOutboundNetworkTime();
+        }
+
         if (shardResult.getAggregationProfileResults() != null) {
             for (ProfileResult profileResult : shardResult.getAggregationProfileResults().getProfileResults()) {
                 AggregationStats aggStats = extractPerAggregation(profileResult, debugStats);
@@ -79,55 +111,72 @@ public class ProfileInfoMapper {
                 }
             }
         }
+
+        debugStats.totals.shardTimingStats.queryTime += shardStats.shardTimingStats.queryTime;
+        debugStats.totals.shardTimingStats.fetchTime += shardStats.shardTimingStats.fetchTime;
+        debugStats.totals.shardTimingStats.networkInboundTime += shardStats.shardTimingStats.networkInboundTime;
+        debugStats.totals.shardTimingStats.networkOutboundTime += shardStats.shardTimingStats.networkOutboundTime;
+
         return shardStats;
     }
 
-    private static AggregationStats extractPerAggregation(ProfileResult profileResult, DebugStats stats) {
+    private static AggregationStats extractPerAggregation(ProfileResult profileResult, ProfileStats stats) {
         AggregationStats aggStats = new AggregationStats();
-        // Check if this is a time_series_unfold aggregation
-        if (TimeSeriesUnfoldAggregator.class.getName().equals(profileResult.getQueryName())) {
+        if (TimeSeriesUnfoldAggregator.class.getSimpleName().equals(profileResult.getQueryName())) {
             Map<String, Object> debugMap = profileResult.getDebugInfo();
             if (debugMap != null && !debugMap.isEmpty()) {
-                // Extract stages metadata
                 String stages = (String) debugMap.get(STAGES_FIELD_NAME);
                 if (stages == null || stages.isEmpty()) {
                     stages = DEFAULT_STAGES;
                 }
-                // Populate aggregation stats
                 aggStats.description = profileResult.getLuceneDescription();
                 aggStats.stages = stages;
-                aggStats.chunkCount = getLongValue(debugMap, TOTAL_CHUNKS);
-                aggStats.sampleCount = getLongValue(debugMap, TOTAL_SAMPLES);
-                aggStats.liveChunksCount = getLongValue(debugMap, LIVE_CHUNK_COUNT);
-                aggStats.closedChunksCount = getLongValue(debugMap, CLOSED_CHUNK_COUNT);
-                aggStats.liveDocCount = getLongValue(debugMap, LIVE_DOC_COUNT);
-                aggStats.closedDocCount = getLongValue(debugMap, CLOSED_DOC_COUNT);
-                aggStats.liveSampleCount = getLongValue(debugMap, LIVE_SAMPLE_COUNT);
-                aggStats.closedSampleCount = getLongValue(debugMap, CLOSED_SAMPLE_COUNT);
-                aggStats.inputSeriesCount = getLongValue(debugMap, TOTAL_INPUT_SERIES);
-                aggStats.outputSeriesCount = getLongValue(debugMap, TOTAL_OUTPUT_SERIES);
+                aggStats.debugStats.chunkCount = getLongValue(debugMap, TOTAL_CHUNKS);
+                aggStats.debugStats.sampleCount = getLongValue(debugMap, TOTAL_SAMPLES);
+                aggStats.debugStats.liveChunksCount = getLongValue(debugMap, LIVE_CHUNK_COUNT);
+                aggStats.debugStats.closedChunksCount = getLongValue(debugMap, CLOSED_CHUNK_COUNT);
+                aggStats.debugStats.liveDocCount = getLongValue(debugMap, LIVE_DOC_COUNT);
+                aggStats.debugStats.closedDocCount = getLongValue(debugMap, CLOSED_DOC_COUNT);
+                aggStats.debugStats.liveSampleCount = getLongValue(debugMap, LIVE_SAMPLE_COUNT);
+                aggStats.debugStats.closedSampleCount = getLongValue(debugMap, CLOSED_SAMPLE_COUNT);
+                aggStats.debugStats.inputSeriesCount = getLongValue(debugMap, TOTAL_INPUT_SERIES);
+                aggStats.debugStats.outputSeriesCount = getLongValue(debugMap, TOTAL_OUTPUT_SERIES);
 
-                // Also accumulate into totals
-                stats.totals.totalTime += profileResult.getTime();
-                stats.totals.chunkCount += getLongValue(debugMap, TOTAL_CHUNKS);
-                stats.totals.sampleCount += getLongValue(debugMap, TOTAL_SAMPLES);
-                stats.totals.liveChunksCount += getLongValue(debugMap, LIVE_CHUNK_COUNT);
-                stats.totals.closedChunksCount += getLongValue(debugMap, CLOSED_CHUNK_COUNT);
-                stats.totals.liveDocCount += getLongValue(debugMap, LIVE_DOC_COUNT);
-                stats.totals.closedDocCount += getLongValue(debugMap, CLOSED_DOC_COUNT);
-                stats.totals.liveSampleCount += getLongValue(debugMap, LIVE_SAMPLE_COUNT);
-                stats.totals.closedSampleCount += getLongValue(debugMap, CLOSED_SAMPLE_COUNT);
-                stats.totals.inputSeriesCount += getLongValue(debugMap, TOTAL_INPUT_SERIES);
-                stats.totals.outputSeriesCount += getLongValue(debugMap, TOTAL_OUTPUT_SERIES);
+                Map<String, Long> breakdown = profileResult.getTimeBreakdown();
+                if (breakdown != null) {
+                    aggStats.timingStats.initializeTime = breakdown.getOrDefault(INITIALIZE_TIME, 0L);
+                    aggStats.timingStats.collectTime = breakdown.getOrDefault(COLLECT_TIME, 0L);
+                    aggStats.timingStats.postCollectionTime = breakdown.getOrDefault(POST_COLLECTION_TIME, 0L);
+                    aggStats.timingStats.buildAggregationTime = breakdown.getOrDefault(BUILD_AGGREGATION_TIME, 0L);
+                    aggStats.timingStats.reduceTime = breakdown.getOrDefault(REDUCE_TIME, 0L);
+                    aggStats.timingStats.totalTime = profileResult.getTime();
+                }
+
+                stats.totals.timingStats.totalTime += profileResult.getTime();
+                stats.totals.debugStats.chunkCount += getLongValue(debugMap, TOTAL_CHUNKS);
+                stats.totals.debugStats.sampleCount += getLongValue(debugMap, TOTAL_SAMPLES);
+                stats.totals.debugStats.liveChunksCount += getLongValue(debugMap, LIVE_CHUNK_COUNT);
+                stats.totals.debugStats.closedChunksCount += getLongValue(debugMap, CLOSED_CHUNK_COUNT);
+                stats.totals.debugStats.liveDocCount += getLongValue(debugMap, LIVE_DOC_COUNT);
+                stats.totals.debugStats.closedDocCount += getLongValue(debugMap, CLOSED_DOC_COUNT);
+                stats.totals.debugStats.liveSampleCount += getLongValue(debugMap, LIVE_SAMPLE_COUNT);
+                stats.totals.debugStats.closedSampleCount += getLongValue(debugMap, CLOSED_SAMPLE_COUNT);
+                stats.totals.debugStats.inputSeriesCount += getLongValue(debugMap, TOTAL_INPUT_SERIES);
+                stats.totals.debugStats.outputSeriesCount += getLongValue(debugMap, TOTAL_OUTPUT_SERIES);
+                stats.totals.timingStats.initializeTime += aggStats.timingStats.initializeTime;
+                stats.totals.timingStats.collectTime += aggStats.timingStats.collectTime;
+                stats.totals.timingStats.postCollectionTime += aggStats.timingStats.postCollectionTime;
+                stats.totals.timingStats.buildAggregationTime += aggStats.timingStats.buildAggregationTime;
+                stats.totals.timingStats.reduceTime += aggStats.timingStats.reduceTime;
             }
         }
         return aggStats;
     }
 
-    private static void writeDebugInfoToXContent(XContentBuilder builder, DebugStats debugStats) throws IOException {
+    private static void writeDebugInfoToXContent(XContentBuilder builder, ProfileStats debugStats) throws IOException {
         if (!debugStats.shardStats.isEmpty()) {
             builder.startObject(TOTALS_FIELD_NAME);
-            writeAggregationFields(builder, debugStats.totals);
+            writeTotalsFields(builder, debugStats.totals);
             builder.endObject();
 
             builder.startArray(SHARDS_FIELD_NAME);
@@ -144,6 +193,14 @@ public class ProfileInfoMapper {
     private static void writeShardStats(XContentBuilder builder, PerShardStats stats) throws IOException {
         builder.startObject();
         builder.field(SHARD_ID_FIELD_NAME, stats.shardId);
+
+        builder.startObject(TIMING_INFO_FIELD_NAME);
+        builder.field(QUERY_TIME, stats.shardTimingStats.queryTime);
+        builder.field(FETCH_TIME, stats.shardTimingStats.fetchTime);
+        builder.field(NETWORK_INBOUND_TIME, stats.shardTimingStats.networkInboundTime);
+        builder.field(NETWORK_OUTBOUND_TIME, stats.shardTimingStats.networkOutboundTime);
+        builder.endObject();
+
         builder.startArray(AGGREGATIONS_FIELD_NAME);
         for (AggregationStats aggStats : stats.aggregations) {
             writeAggregationStats(builder, aggStats);
@@ -166,20 +223,55 @@ public class ProfileInfoMapper {
      * Writes aggregation stat fields (without wrapping object)
      */
     private static void writeAggregationFields(XContentBuilder builder, AggregationStats stats) throws IOException {
+        builder.startObject(TIMING_INFO_FIELD_NAME);
+        builder.field(INITIALIZE_TIME, stats.timingStats.initializeTime);
+        builder.field(COLLECT_TIME, stats.timingStats.collectTime);
+        builder.field(POST_COLLECTION_TIME, stats.timingStats.postCollectionTime);
+        builder.field(BUILD_AGGREGATION_TIME, stats.timingStats.buildAggregationTime);
+        builder.field(REDUCE_TIME, stats.timingStats.reduceTime);
+        builder.endObject();
+
         builder.startObject(DEBUG_INFO_FIELD_NAME);
         if (stats.stages != null && !stats.stages.isEmpty()) {
             builder.field(STAGES_FIELD_NAME, stats.stages);
         }
-        builder.field(TOTAL_CHUNKS, stats.chunkCount);
-        builder.field(TOTAL_SAMPLES, stats.sampleCount);
-        builder.field(TOTAL_INPUT_SERIES, stats.inputSeriesCount);
-        builder.field(TOTAL_OUTPUT_SERIES, stats.outputSeriesCount);
-        builder.field(LIVE_CHUNK_COUNT, stats.liveChunksCount);
-        builder.field(CLOSED_CHUNK_COUNT, stats.closedChunksCount);
-        builder.field(LIVE_DOC_COUNT, stats.liveDocCount);
-        builder.field(CLOSED_DOC_COUNT, stats.closedDocCount);
-        builder.field(LIVE_SAMPLE_COUNT, stats.liveSampleCount);
-        builder.field(CLOSED_SAMPLE_COUNT, stats.closedSampleCount);
+        builder.field(TOTAL_CHUNKS, stats.debugStats.chunkCount);
+        builder.field(TOTAL_SAMPLES, stats.debugStats.sampleCount);
+        builder.field(TOTAL_INPUT_SERIES, stats.debugStats.inputSeriesCount);
+        builder.field(TOTAL_OUTPUT_SERIES, stats.debugStats.outputSeriesCount);
+        builder.field(LIVE_CHUNK_COUNT, stats.debugStats.liveChunksCount);
+        builder.field(CLOSED_CHUNK_COUNT, stats.debugStats.closedChunksCount);
+        builder.field(LIVE_DOC_COUNT, stats.debugStats.liveDocCount);
+        builder.field(CLOSED_DOC_COUNT, stats.debugStats.closedDocCount);
+        builder.field(LIVE_SAMPLE_COUNT, stats.debugStats.liveSampleCount);
+        builder.field(CLOSED_SAMPLE_COUNT, stats.debugStats.closedSampleCount);
+        builder.endObject();
+    }
+
+    private static void writeTotalsFields(XContentBuilder builder, TotalsStats stats) throws IOException {
+        builder.startObject(TIMING_INFO_FIELD_NAME);
+        builder.field(QUERY_TIME, stats.shardTimingStats.queryTime);
+        builder.field(FETCH_TIME, stats.shardTimingStats.fetchTime);
+        builder.field(NETWORK_INBOUND_TIME, stats.shardTimingStats.networkInboundTime);
+        builder.field(NETWORK_OUTBOUND_TIME, stats.shardTimingStats.networkOutboundTime);
+        builder.field(INITIALIZE_TIME, stats.timingStats.initializeTime);
+        builder.field(COLLECT_TIME, stats.timingStats.collectTime);
+        builder.field(POST_COLLECTION_TIME, stats.timingStats.postCollectionTime);
+        builder.field(BUILD_AGGREGATION_TIME, stats.timingStats.buildAggregationTime);
+        builder.field(REDUCE_TIME, stats.timingStats.reduceTime);
+        builder.endObject();
+
+        builder.startObject(DEBUG_INFO_FIELD_NAME);
+        builder.field(TOTAL_CHUNKS, stats.debugStats.chunkCount);
+        builder.field(TOTAL_SAMPLES, stats.debugStats.sampleCount);
+        builder.field(TOTAL_INPUT_SERIES, stats.debugStats.inputSeriesCount);
+        builder.field(TOTAL_OUTPUT_SERIES, stats.debugStats.outputSeriesCount);
+        builder.field(LIVE_CHUNK_COUNT, stats.debugStats.liveChunksCount);
+        builder.field(CLOSED_CHUNK_COUNT, stats.debugStats.closedChunksCount);
+        builder.field(LIVE_DOC_COUNT, stats.debugStats.liveDocCount);
+        builder.field(CLOSED_DOC_COUNT, stats.debugStats.closedDocCount);
+        builder.field(LIVE_SAMPLE_COUNT, stats.debugStats.liveSampleCount);
+        builder.field(CLOSED_SAMPLE_COUNT, stats.debugStats.closedSampleCount);
         builder.endObject();
     }
 
@@ -191,24 +283,42 @@ public class ProfileInfoMapper {
         return 0;
     }
 
-    private static class DebugStats {
+    private static class ProfileStats {
         List<PerShardStats> shardStats = new ArrayList<>();
-        AggregationStats totals = new AggregationStats();
+        TotalsStats totals = new TotalsStats();
     }
 
     private static class PerShardStats {
         String shardId;
         List<AggregationStats> aggregations = new ArrayList<>();
+        ShardTimingStats shardTimingStats = new ShardTimingStats();
 
         PerShardStats(String shardId) {
             this.shardId = shardId;
         }
     }
 
+    private static class TotalsStats {
+        AggregationTimingStats timingStats = new AggregationTimingStats();
+        AggregationDebugStats debugStats = new AggregationDebugStats();
+        ShardTimingStats shardTimingStats = new ShardTimingStats();
+    }
+
     private static class AggregationStats {
         String description;
         String stages;
-        long totalTime = 0;
+        AggregationTimingStats timingStats = new AggregationTimingStats();
+        AggregationDebugStats debugStats = new AggregationDebugStats();
+    }
+
+    private static class ShardTimingStats {
+        long queryTime = 0;
+        long fetchTime = 0;
+        long networkInboundTime = 0;
+        long networkOutboundTime = 0;
+    }
+
+    private static class AggregationDebugStats {
         long chunkCount = 0;
         long sampleCount = 0;
         long inputSeriesCount = 0;
@@ -219,6 +329,15 @@ public class ProfileInfoMapper {
         long closedDocCount = 0;
         long liveSampleCount = 0;
         long closedSampleCount = 0;
+    }
+
+    private static class AggregationTimingStats {
+        long totalTime = 0;
+        long initializeTime = 0;
+        long collectTime = 0;
+        long postCollectionTime = 0;
+        long buildAggregationTime = 0;
+        long reduceTime = 0;
     }
 
 }
