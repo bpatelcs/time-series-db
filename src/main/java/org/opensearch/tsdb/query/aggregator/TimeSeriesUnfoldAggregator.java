@@ -27,6 +27,7 @@ import org.opensearch.tsdb.core.model.Labels;
 import org.opensearch.tsdb.core.model.Sample;
 import org.opensearch.tsdb.core.reader.MetricsDocValues;
 import org.opensearch.tsdb.core.reader.MetricsLeafReader;
+import org.opensearch.tsdb.metrics.TSDBMetrics;
 import org.opensearch.tsdb.query.utils.SampleMerger;
 import org.opensearch.tsdb.query.stage.UnaryPipelineStage;
 import org.opensearch.tsdb.lang.m3.stage.AbstractGroupingStage;
@@ -106,6 +107,22 @@ public class TimeSeriesUnfoldAggregator extends BucketsAggregator {
     // Aggregator profiler debug info
     private final DebugInfo debugInfo = new DebugInfo();
 
+    // Metrics tracking (using primitives for minimal overhead)
+    private long collectStartNanos = 0;
+    private long collectDurationNanos = 0;
+    private long postCollectStartNanos = 0;
+    private long postCollectDurationNanos = 0;
+    private int totalDocsProcessed = 0;
+    private int liveDocsProcessed = 0;
+    private int closedDocsProcessed = 0;
+    private int totalChunksProcessed = 0;
+    private int liveChunksProcessed = 0;
+    private int closedChunksProcessed = 0;
+    private int totalSamplesProcessed = 0;
+    private int liveSamplesProcessed = 0;
+    private int closedSamplesProcessed = 0;
+    private int chunksForDocErrors = 0;
+
     /**
      * Create a time series unfold aggregator.
      *
@@ -153,6 +170,10 @@ public class TimeSeriesUnfoldAggregator extends BucketsAggregator {
 
     @Override
     public LeafBucketCollector getLeafCollector(LeafReaderContext ctx, LeafBucketCollector sub) throws IOException {
+        // Start timing collect phase
+        if (collectStartNanos == 0) {
+            collectStartNanos = System.nanoTime();
+        }
 
         return new TimeSeriesUnfoldLeafBucketCollector(sub, ctx);
     }
@@ -191,11 +212,25 @@ public class TimeSeriesUnfoldAggregator extends BucketsAggregator {
 
         @Override
         public void collect(int doc, long bucket) throws IOException {
-            // TODO: Add metrics to capture collect errors for monitoring and debugging
+            // Track document processing - determine if from live or closed index
+            boolean isLiveReader = metricsReader instanceof LiveSeriesIndexLeafReader;
+            totalDocsProcessed++;
+            if (isLiveReader) {
+                liveDocsProcessed++;
+            } else {
+                closedDocsProcessed++;
+            }
+
             debugInfo.chunkCount++;
 
             // Use unified API to get chunks for this document
-            List<ChunkIterator> chunkIterators = metricsReader.chunksForDoc(doc, metricsDocValues);
+            List<ChunkIterator> chunkIterators;
+            try {
+                chunkIterators = metricsReader.chunksForDoc(doc, metricsDocValues);
+            } catch (Exception e) {
+                chunksForDocErrors++;
+                throw e;
+            }
 
             // Process all chunks and collect samples
             // Preallocate based on total sample count from all chunks
@@ -205,6 +240,13 @@ public class TimeSeriesUnfoldAggregator extends BucketsAggregator {
                 if (chunkSamples > 0) {
                     totalSampleCount += chunkSamples;
                 }
+                // Track chunks
+                totalChunksProcessed++;
+                if (isLiveReader) {
+                    liveChunksProcessed++;
+                } else {
+                    closedChunksProcessed++;
+                }
             }
 
             // FIXME: Current approach uses repeated two-list merge which is naive for merging k sorted iterators.
@@ -212,9 +254,19 @@ public class TimeSeriesUnfoldAggregator extends BucketsAggregator {
             List<Sample> allSamples = totalSampleCount > 0 ? new ArrayList<>(totalSampleCount) : new ArrayList<>();
             for (ChunkIterator chunkIterator : chunkIterators) {
                 // Use SampleMerger to merge chunks, assuming both are sorted
-                allSamples = MERGE_HELPER.merge(allSamples, chunkIterator.decodeSamples(minTimestamp, maxTimestamp), true);
+                List<Sample> decodedSamples = chunkIterator.decodeSamples(minTimestamp, maxTimestamp);
+
+                // Track samples
+                int sampleCount = decodedSamples.size();
+                totalSamplesProcessed += sampleCount;
+                if (isLiveReader) {
+                    liveSamplesProcessed += sampleCount;
+                } else {
+                    closedSamplesProcessed += sampleCount;
+                }
+
+                allSamples = MERGE_HELPER.merge(allSamples, decodedSamples, true);
             }
-            boolean isLiveReader = metricsReader instanceof LiveSeriesIndexLeafReader;
             if (isLiveReader) {
                 debugInfo.liveDocCount++;
                 debugInfo.liveChunkCount += chunkIterators.size();
@@ -316,37 +368,47 @@ public class TimeSeriesUnfoldAggregator extends BucketsAggregator {
 
     @Override
     public void postCollection() throws IOException {
-        // Process each bucket's time series
-        for (Map.Entry<Long, List<TimeSeries>> entry : timeSeriesByBucket.entrySet()) {
-            long bucketOrd = entry.getKey();
-
-            // Apply pipeline stages
-            List<TimeSeries> processedTimeSeries = entry.getValue();
-            debugInfo.inputSeriesCount += processedTimeSeries.size();
-
-            if (stages != null && !stages.isEmpty()) {
-                // Process all stages except the last one normally
-                for (int i = 0; i < stages.size() - 1; i++) {
-                    UnaryPipelineStage stage = stages.get(i);
-                    processedTimeSeries = stage.process(processedTimeSeries);
-                }
-
-                // Handle the last stage specially if it's an AbstractGroupingStage
-                UnaryPipelineStage lastStage = stages.get(stages.size() - 1);
-                if (lastStage instanceof AbstractGroupingStage groupingStage) {
-                    // Call process without materialization (materialize=false)
-                    // The materialization will happen during the reduce phase
-                    processedTimeSeries = groupingStage.process(processedTimeSeries, false);
-                } else {
-                    processedTimeSeries = lastStage.process(processedTimeSeries);
-                }
-            }
-
-            // Store the processed time series
-            processedTimeSeriesByBucket.put(bucketOrd, processedTimeSeries);
-
+        // End collect phase timing and start postCollect timing
+        if (collectStartNanos > 0) {
+            collectDurationNanos = System.nanoTime() - collectStartNanos;
         }
-        super.postCollection();
+        postCollectStartNanos = System.nanoTime();
+
+        try {
+            // Process each bucket's time series
+            for (Map.Entry<Long, List<TimeSeries>> entry : timeSeriesByBucket.entrySet()) {
+                long bucketOrd = entry.getKey();
+
+                // Apply pipeline stages
+                List<TimeSeries> processedTimeSeries = entry.getValue();
+                debugInfo.inputSeriesCount += processedTimeSeries.size();
+
+                if (stages != null && !stages.isEmpty()) {
+                    // Process all stages except the last one normally
+                    for (int i = 0; i < stages.size() - 1; i++) {
+                        UnaryPipelineStage stage = stages.get(i);
+                        processedTimeSeries = stage.process(processedTimeSeries);
+                    }
+
+                    // Handle the last stage specially if it's an AbstractGroupingStage
+                    UnaryPipelineStage lastStage = stages.get(stages.size() - 1);
+                    if (lastStage instanceof AbstractGroupingStage groupingStage) {
+                        // Call process without materialization (materialize=false)
+                        // The materialization will happen during the reduce phase
+                        processedTimeSeries = groupingStage.process(processedTimeSeries, false);
+                    } else {
+                        processedTimeSeries = lastStage.process(processedTimeSeries);
+                    }
+                }
+
+                // Store the processed time series
+                processedTimeSeriesByBucket.put(bucketOrd, processedTimeSeries);
+            }
+            super.postCollection();
+        } finally {
+            // End postCollect timing
+            postCollectDurationNanos = System.nanoTime() - postCollectStartNanos;
+        }
     }
 
     @Override
@@ -357,32 +419,37 @@ public class TimeSeriesUnfoldAggregator extends BucketsAggregator {
 
     @Override
     public InternalAggregation[] buildAggregations(long[] bucketOrds) throws IOException {
-        InternalAggregation[] results = new InternalAggregation[bucketOrds.length];
+        try {
+            InternalAggregation[] results = new InternalAggregation[bucketOrds.length];
 
-        for (int i = 0; i < bucketOrds.length; i++) {
-            long bucketOrd = bucketOrds[i];
-            List<TimeSeries> timeSeriesList = processedTimeSeriesByBucket.getOrDefault(bucketOrd, List.of());
-            debugInfo.outputSeriesCount += timeSeriesList.size();
+            for (int i = 0; i < bucketOrds.length; i++) {
+                long bucketOrd = bucketOrds[i];
+                List<TimeSeries> timeSeriesList = processedTimeSeriesByBucket.getOrDefault(bucketOrd, List.of());
+                debugInfo.outputSeriesCount += timeSeriesList.size();
 
-            // Get the last stage to determine the reduce behavior
-            UnaryPipelineStage lastStage = (stages == null || stages.isEmpty()) ? null : stages.getLast();
+                // Get the last stage to determine the reduce behavior
+                UnaryPipelineStage lastStage = (stages == null || stages.isEmpty()) ? null : stages.getLast();
 
-            // Only set global aggregation stages as the reduceStage
-            UnaryPipelineStage reduceStage = null;
-            if (lastStage != null && lastStage.isGlobalAggregation()) {
-                reduceStage = lastStage;
+                // Only set global aggregation stages as the reduceStage
+                UnaryPipelineStage reduceStage = null;
+                if (lastStage != null && lastStage.isGlobalAggregation()) {
+                    reduceStage = lastStage;
+                }
+
+                // Use the generic InternalPipeline with the reduce stage
+                Map<String, Object> baseMetadata = metadata();
+                results[i] = new InternalTimeSeries(
+                    name,
+                    timeSeriesList,
+                    baseMetadata != null ? baseMetadata : Map.of(),
+                    reduceStage  // Pass the reduce stage (null for transformation stages)
+                );
             }
-
-            // Use the generic InternalPipeline with the reduce stage
-            Map<String, Object> baseMetadata = metadata();
-            results[i] = new InternalTimeSeries(
-                name,
-                timeSeriesList,
-                baseMetadata != null ? baseMetadata : Map.of(),
-                reduceStage  // Pass the reduce stage (null for transformation stages)
-            );
+            return results;
+        } finally {
+            // Emit all metrics in one batch - minimal overhead
+            recordMetrics();
         }
-        return results;
     }
 
     @Override
@@ -396,6 +463,68 @@ public class TimeSeriesUnfoldAggregator extends BucketsAggregator {
         super.collectDebugInfo(add);
         debugInfo.add(add);
         add.accept("stages", stages == null ? "" : stages.stream().map(UnaryPipelineStage::getName).collect(Collectors.joining(",")));
+    }
+
+    /**
+     * Emit all collected metrics in one batch for minimal overhead.
+     * All metrics are batched and emitted together at the end in a finally block.
+     */
+    private void recordMetrics() {
+        if (!TSDBMetrics.isInitialized()) {
+            return;
+        }
+
+        try {
+            // Record latencies (convert nanos to millis only at emission time)
+            if (collectDurationNanos > 0) {
+                TSDBMetrics.recordHistogram(TSDBMetrics.AGGREGATION.collectLatency, collectDurationNanos / 1_000_000.0);
+            }
+
+            if (postCollectDurationNanos > 0) {
+                TSDBMetrics.recordHistogram(TSDBMetrics.AGGREGATION.postCollectLatency, postCollectDurationNanos / 1_000_000.0);
+            }
+
+            // Record document counts
+            if (totalDocsProcessed > 0) {
+                TSDBMetrics.recordHistogram(TSDBMetrics.AGGREGATION.docsTotal, totalDocsProcessed);
+            }
+            if (liveDocsProcessed > 0) {
+                TSDBMetrics.recordHistogram(TSDBMetrics.AGGREGATION.docsLive, liveDocsProcessed);
+            }
+            if (closedDocsProcessed > 0) {
+                TSDBMetrics.recordHistogram(TSDBMetrics.AGGREGATION.docsClosed, closedDocsProcessed);
+            }
+
+            // Record chunk counts
+            if (totalChunksProcessed > 0) {
+                TSDBMetrics.recordHistogram(TSDBMetrics.AGGREGATION.chunksTotal, totalChunksProcessed);
+            }
+            if (liveChunksProcessed > 0) {
+                TSDBMetrics.recordHistogram(TSDBMetrics.AGGREGATION.chunksLive, liveChunksProcessed);
+            }
+            if (closedChunksProcessed > 0) {
+                TSDBMetrics.recordHistogram(TSDBMetrics.AGGREGATION.chunksClosed, closedChunksProcessed);
+            }
+
+            // Record sample counts
+            if (totalSamplesProcessed > 0) {
+                TSDBMetrics.recordHistogram(TSDBMetrics.AGGREGATION.samplesTotal, totalSamplesProcessed);
+            }
+            if (liveSamplesProcessed > 0) {
+                TSDBMetrics.recordHistogram(TSDBMetrics.AGGREGATION.samplesLive, liveSamplesProcessed);
+            }
+            if (closedSamplesProcessed > 0) {
+                TSDBMetrics.recordHistogram(TSDBMetrics.AGGREGATION.samplesClosed, closedSamplesProcessed);
+            }
+
+            // Record errors
+            if (chunksForDocErrors > 0) {
+                TSDBMetrics.incrementCounter(TSDBMetrics.AGGREGATION.chunksForDocErrors, chunksForDocErrors);
+            }
+        } catch (Exception e) {
+            // Swallow exceptions in metrics recording to avoid impacting actual operation
+            // Metrics failures should never break the application
+        }
     }
 
     // profiler debug info

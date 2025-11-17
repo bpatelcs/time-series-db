@@ -7,6 +7,10 @@
  */
 package org.opensearch.tsdb;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.opensearch.transport.client.Client;
+import org.opensearch.cluster.service.ClusterService;
 import org.apache.lucene.store.Directory;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNodes;
@@ -17,8 +21,11 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsFilter;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
+import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.tsdb.core.utils.Constants;
 import org.opensearch.core.index.shard.ShardId;
+import org.opensearch.env.Environment;
+import org.opensearch.env.NodeEnvironment;
 import org.opensearch.env.ShardLock;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineFactory;
@@ -30,15 +37,23 @@ import org.opensearch.plugins.EnginePlugin;
 import org.opensearch.plugins.IndexStorePlugin;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.plugins.SearchPlugin;
+import org.opensearch.plugins.TelemetryAwarePlugin;
+import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.rest.RestController;
 import org.opensearch.rest.RestHandler;
+import org.opensearch.script.ScriptService;
 import org.opensearch.search.aggregations.InternalAggregation;
+import org.opensearch.telemetry.metrics.MetricsRegistry;
+import org.opensearch.telemetry.tracing.Tracer;
 import org.opensearch.threadpool.ExecutorBuilder;
 import org.opensearch.threadpool.FixedExecutorBuilder;
+import org.opensearch.threadpool.ThreadPool;
+import org.opensearch.tsdb.metrics.TSDBMetrics;
 import org.opensearch.tsdb.query.aggregator.InternalTimeSeries;
 import org.opensearch.tsdb.query.aggregator.TimeSeriesCoordinatorAggregationBuilder;
 import org.opensearch.tsdb.query.aggregator.TimeSeriesUnfoldAggregationBuilder;
 import org.opensearch.tsdb.query.rest.RestM3QLAction;
+import org.opensearch.watcher.ResourceWatcherService;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -60,7 +75,9 @@ import java.util.function.Supplier;
  *   <li>Custom store implementation</li>
  * </ul>
  */
-public class TSDBPlugin extends Plugin implements SearchPlugin, EnginePlugin, ActionPlugin, IndexStorePlugin {
+public class TSDBPlugin extends Plugin implements SearchPlugin, EnginePlugin, ActionPlugin, IndexStorePlugin, TelemetryAwarePlugin {
+
+    private static final Logger logger = LogManager.getLogger(TSDBPlugin.class);
 
     // Search plugin constants
     private static final String TIME_SERIES_NAMED_WRITEABLE_NAME = "time_series";
@@ -70,6 +87,9 @@ public class TSDBPlugin extends Plugin implements SearchPlugin, EnginePlugin, Ac
 
     // Management thread pool name to run tasks like retention and compactions.
     public static final String MGMT_THREAD_POOL_NAME = "mgmt";
+
+    // Telemetry
+    private volatile Optional<MetricsRegistry> metricsRegistry = Optional.empty();
 
     /**
      * This setting identifies if the tsdb engine is enabled for the index.
@@ -172,6 +192,32 @@ public class TSDBPlugin extends Plugin implements SearchPlugin, EnginePlugin, Ac
      * Default constructor
      */
     public TSDBPlugin() {}
+
+    /** Initialize metrics if telemetry is available. */
+    @Override
+    public java.util.Collection<Object> createComponents(
+        Client client,
+        ClusterService clusterService,
+        ThreadPool threadPool,
+        ResourceWatcherService resourceWatcherService,
+        ScriptService scriptService,
+        NamedXContentRegistry xContentRegistry,
+        Environment environment,
+        NodeEnvironment nodeEnvironment,
+        NamedWriteableRegistry namedWriteableRegistry,
+        IndexNameExpressionResolver indexNameExpressionResolver,
+        Supplier<RepositoriesService> repositoriesServiceSupplier,
+        Tracer tracer,
+        MetricsRegistry metricsRegistry
+    ) {
+        if (metricsRegistry != null) {
+            this.metricsRegistry = Optional.of(metricsRegistry);
+            TSDBMetrics.initialize(metricsRegistry);
+        } else {
+            logger.warn("MetricsRegistry is null; TSDB metrics not initialized");
+        }
+        return Collections.emptyList();
+    }
 
     @Override
     public List<Setting<?>> getSettings() {

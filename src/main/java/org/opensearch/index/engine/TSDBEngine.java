@@ -52,6 +52,7 @@ import org.opensearch.tsdb.core.index.live.LiveSeriesIndex;
 import org.opensearch.tsdb.core.mapping.Constants;
 import org.opensearch.tsdb.core.reader.MetricsDirectoryReaderReferenceManager;
 import org.opensearch.tsdb.core.retention.RetentionFactory;
+import org.opensearch.tsdb.metrics.TSDBMetrics;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -183,7 +184,8 @@ public class TSDBEngine extends Engine {
             );
 
             final Map<String, String> userData = lastCommittedSegmentInfos.getUserData();
-            this.historyUUID = loadHistoryUUID(userData);
+            // Read history UUID directly from userData (avoid protected API)
+            this.historyUUID = userData.get(Engine.HISTORY_UUID_KEY);
             this.metricsReaderManager = getMetricsReaderManager();
             success = true;
         } finally {
@@ -340,6 +342,7 @@ public class TSDBEngine extends Engine {
         } else {
             IndexResult successResult = new IndexResult(indexOp.version(), indexOp.primaryTerm(), indexOp.seqNo(), true);
             successResult.setTranslogLocation(context.translogLocation);
+            TSDBMetrics.incrementCounter(TSDBMetrics.INGESTION.samplesIngested, 1);
             return successResult;
         }
     }

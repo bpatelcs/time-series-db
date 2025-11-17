@@ -24,6 +24,7 @@ import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Labels;
 import org.opensearch.tsdb.core.model.Sample;
 import org.opensearch.tsdb.core.utils.Time;
+import org.opensearch.tsdb.metrics.TSDBMetrics;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -145,6 +146,7 @@ public class Head {
         try {
             if (isNewSeriesCreated) {
                 liveSeriesIndex.addSeries(labels, hash, timestamp);
+                TSDBMetrics.incrementCounter(TSDBMetrics.INGESTION.seriesCreated, 1);
                 return new SeriesResult(newSeries, true);
             } else {
                 return new SeriesResult(actualSeries, false);
@@ -500,7 +502,10 @@ public class Head {
                     return false; // FIXME: OOO handling - for now skip to ensure compressed chunks are monotonically increasing
                 }
 
-                series.append(seqNo, sample.getTimestamp(), sample.getValue(), context.options());
+                boolean chunkCreated = series.append(seqNo, sample.getTimestamp(), sample.getValue(), context.options());
+                if (chunkCreated) {
+                    TSDBMetrics.incrementCounter(TSDBMetrics.INGESTION.memChunksCreated, 1);
+                }
                 return true;
             } finally {
                 series.unlock();
