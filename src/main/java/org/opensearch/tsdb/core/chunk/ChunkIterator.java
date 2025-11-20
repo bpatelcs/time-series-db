@@ -72,12 +72,12 @@ public interface ChunkIterator {
      *
      * @param minTimestamp Minimum timestamp (inclusive) for samples to include
      * @param maxTimestamp Maximum timestamp (exclusive) for samples to include
-     * @return List of samples within the time range, never null but may be empty
+     * @return DecodeResult which contains a list of samples within the time range (non-null), and the number of processed samples
      * @throws IllegalStateException if chunk data corruption is detected
      * @throws IllegalArgumentException if chunk format is invalid
      * @throws RuntimeException if any other error occurs during iteration
      */
-    default List<Sample> decodeSamples(long minTimestamp, long maxTimestamp) {
+    default DecodeResult decodeSamples(long minTimestamp, long maxTimestamp) {
         // TODO: Benchmark and optimize decodeSamples performance:
         // 1. Measure impact of pre-allocation vs dynamic resizing
         // 2. Consider range-based capacity estimation for partial queries
@@ -86,11 +86,20 @@ public interface ChunkIterator {
         int totalSamples = totalSamples();
         List<Sample> samples = totalSamples > 0 ? new ArrayList<>(totalSamples) : new ArrayList<>();
 
+        int processedCount = 0;
         while (next() != ValueType.NONE) {
+            processedCount++;
             TimestampValue tv = at();
             long timestamp = tv.timestamp();
             // [minTimestamp, maxTimestamp) - inclusive start, exclusive end
-            if (timestamp >= minTimestamp && timestamp < maxTimestamp) {
+
+            // ChunkIterators are ordered, so break if out of bounds
+            if (timestamp >= maxTimestamp) {
+                break;
+            }
+
+            // Valid timestamp, add it
+            if (timestamp >= minTimestamp) {
                 double value = tv.value();
                 samples.add(new FloatSample(timestamp, value));
             }
@@ -108,6 +117,9 @@ public interface ChunkIterator {
             }
         }
 
-        return samples;
+        return new DecodeResult(samples, processedCount);
+    }
+
+    record DecodeResult(List<Sample> samples, int processedSampleCount) {
     }
 }

@@ -20,6 +20,8 @@ import org.opensearch.search.aggregations.LeafBucketCollectorBase;
 import org.opensearch.search.aggregations.bucket.BucketsAggregator;
 import org.opensearch.search.internal.SearchContext;
 import org.opensearch.tsdb.core.chunk.ChunkIterator;
+import org.opensearch.tsdb.core.chunk.DedupIterator;
+import org.opensearch.tsdb.core.chunk.MergeIterator;
 import org.opensearch.tsdb.core.index.live.LiveSeriesIndexLeafReader;
 import org.opensearch.tsdb.core.model.ByteLabels;
 import org.opensearch.tsdb.core.model.FloatSample;
@@ -220,6 +222,7 @@ public class TimeSeriesUnfoldAggregator extends BucketsAggregator {
                 closedDocsProcessed++;
             }
 
+            // FIXME: this is doc count, not chunk count
             debugInfo.chunkCount++;
 
             // Use unified API to get chunks for this document
@@ -248,29 +251,29 @@ public class TimeSeriesUnfoldAggregator extends BucketsAggregator {
                 }
             }
 
-            // FIXME: Current approach uses repeated two-list merge which is naive for merging k sorted iterators.
-            // We can consider more efficient merging strategies. E.g., min-heap approach or directly using arrays instead of lists.
-            List<Sample> allSamples = totalSampleCount > 0 ? new ArrayList<>(totalSampleCount) : new ArrayList<>();
-            for (ChunkIterator chunkIterator : chunkIterators) {
-                // Use SampleMerger to merge chunks, assuming both are sorted
-                List<Sample> decodedSamples = chunkIterator.decodeSamples(minTimestamp, maxTimestamp);
-
-                // Track samples
-                int sampleCount = decodedSamples.size();
-                totalSamplesProcessed += sampleCount;
-                if (isLiveReader) {
-                    liveSamplesProcessed += sampleCount;
-                } else {
-                    closedSamplesProcessed += sampleCount;
-                }
-
-                allSamples = MERGE_HELPER.merge(allSamples, decodedSamples, true);
+            if (chunkIterators.isEmpty()) {
+                return;
             }
+
+            ChunkIterator it;
+            if (chunkIterators.size() == 1) {
+                it = chunkIterators.getFirst();
+            } else {
+                // TODO: make dedup policy configurable
+                // dedup is only expected to be used against live series' MemChunks, which may contain chunks with overlapping timestamps
+                it = new DedupIterator(new MergeIterator(chunkIterators), DedupIterator.DuplicatePolicy.FIRST);
+            }
+            ChunkIterator.DecodeResult decodeResult = it.decodeSamples(minTimestamp, maxTimestamp);
+            List<Sample> allSamples = decodeResult.samples();
+
+            totalSamplesProcessed += decodeResult.processedSampleCount();
             if (isLiveReader) {
+                liveSamplesProcessed += decodeResult.processedSampleCount();
                 debugInfo.liveDocCount++;
                 debugInfo.liveChunkCount += chunkIterators.size();
                 debugInfo.liveSampleCount += allSamples.size();
             } else {
+                closedSamplesProcessed += decodeResult.processedSampleCount();
                 debugInfo.closedDocCount++;
                 debugInfo.closedChunkCount += chunkIterators.size();
                 debugInfo.closedSampleCount += allSamples.size();

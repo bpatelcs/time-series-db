@@ -137,7 +137,7 @@ public class MergeIteratorBenchmark {
     @Benchmark
     public void benchmarkHeapMergeDecode(Blackhole bh) {
         MergeIterator mergeIterator = new MergeIterator(chunkIterators);
-        List<Sample> result = mergeIterator.decodeSamples(0, Long.MAX_VALUE);
+        List<Sample> result = mergeIterator.decodeSamples(0, Long.MAX_VALUE).samples();
         bh.consume(result);
     }
 

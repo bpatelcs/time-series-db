@@ -7,10 +7,6 @@
  */
 package org.opensearch.tsdb.core.chunk;
 
-import org.opensearch.tsdb.core.model.Sample;
-
-import java.util.List;
-
 /**
  * Wrapper iterator that handles duplicate timestamps from an underlying iterator.
  * Assumes the underlying iterator produces timestamps in non-decreasing order.
@@ -156,7 +152,7 @@ public class DedupIterator implements ChunkIterator {
     }
 
     @Override
-    public List<Sample> decodeSamples(long minTimestamp, long maxTimestamp) {
+    public DecodeResult decodeSamples(long minTimestamp, long maxTimestamp) {
         return ChunkIterator.super.decodeSamples(minTimestamp, maxTimestamp);
     }
 }

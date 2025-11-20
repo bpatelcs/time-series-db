@@ -21,6 +21,7 @@ import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Sample;
 import org.opensearch.tsdb.core.model.Labels;
 import org.opensearch.tsdb.core.model.ByteLabels;
+import org.opensearch.tsdb.core.head.MemChunk;
 
 import static org.opensearch.tsdb.TestUtils.assertSamplesEqual;
 import org.opensearch.tsdb.lang.m3.stage.ScaleStage;
@@ -1500,4 +1501,76 @@ public class TSAggregationPluginTests extends TimeSeriesAggregatorTestCase {
         });
     }
 
+    /**
+     * Test edge case with 3 chunks
+     */
+    public void testUnfoldWithExactlyThreeChunks() throws Exception {
+        TimeSeriesUnfoldAggregationBuilder unfoldAgg = new TimeSeriesUnfoldAggregationBuilder(
+            "unfold_three_chunks",
+            List.of(),
+            1000L,
+            5000L,
+            1000L
+        );
+
+        testCaseWithLiveSeriesIndex(unfoldAgg, new MatchAllDocsQuery(), helper -> {
+            // Create exactly 3 chunks to test the > 2 boundary
+            MemChunk chunk1 = createMemChunk(1000L, 5.0);
+            MemChunk chunk2 = createMemChunk(2000L, 10.0, 3000L, 15.0);
+            MemChunk chunk3 = createMemChunk(4000L, 20.0);
+
+            // Link chunks
+            chunk3.setPrev(chunk2);
+            chunk2.setPrev(chunk1);
+
+            // Add series
+            Labels labels = ByteLabels.fromMap(Map.of("__name__", "test_metric", "host", "host1"));
+            long seriesRef = 200L;
+            helper.getLiveSeriesIndex().addSeries(labels, seriesRef, 4000L);
+            helper.addChunksForSeries(seriesRef, chunk3);
+        }, (InternalTimeSeries result) -> {
+            assertNotNull("Result should not be null", result);
+
+            List<TimeSeries> timeSeries = result.getTimeSeries();
+            assertEquals("Should have exactly 1 time series", 1, timeSeries.size());
+
+            TimeSeries series = timeSeries.getFirst();
+            List<Sample> samples = series.getSamples();
+
+            // Verify samples are scaled by 2.0
+            List<Sample> expectedSamples = List.of(
+                new FloatSample(1000L, 5.0f),
+                new FloatSample(2000L, 10.0f),
+                new FloatSample(3000L, 15.0f),
+                new FloatSample(4000L, 20.0f)
+            );
+
+            assertSamplesEqual("MergeIterator with 3 chunks should scale correctly", expectedSamples, samples, SAMPLE_COMPARISON_DELTA);
+        });
+    }
+
+    /**
+     * Test edge case with 0 chunks, if unfold has matched a series that closed all chunks, but the series has not been cleaned up yet.
+     */
+    public void testUnfoldWithZeroChunks() throws Exception {
+        TimeSeriesUnfoldAggregationBuilder unfoldAgg = new TimeSeriesUnfoldAggregationBuilder(
+            "unfold_three_chunks",
+            List.of(), // Scale by 2 to verify transformation works with MergeIterator
+            1000L,
+            5000L,
+            1000L
+        );
+
+        testCaseWithLiveSeriesIndex(unfoldAgg, new MatchAllDocsQuery(), helper -> {
+            // Add series
+            Labels labels = ByteLabels.fromMap(Map.of("__name__", "test_metric", "host", "host1"));
+            long seriesRef = 200L;
+            helper.getLiveSeriesIndex().addSeries(labels, seriesRef, 4000L);
+        }, (InternalTimeSeries result) -> {
+            assertNotNull("Result should not be null", result);
+
+            List<TimeSeries> timeSeries = result.getTimeSeries();
+            assertTrue("Unfold does not include time series if empty", timeSeries.isEmpty());
+        });
+    }
 }

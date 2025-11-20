@@ -62,7 +62,7 @@ public class XORIteratorTests extends OpenSearchTestCase {
         XORIterator iterator = new XORIterator(chunk.bytes());
 
         // Test the default method
-        List<Sample> samples = iterator.decodeSamples(1500L, 2500L);
+        List<Sample> samples = iterator.decodeSamples(1500L, 2500L).samples();
 
         assertEquals("Should have 1 sample in range", 1, samples.size());
         assertEquals("Sample timestamp should be 2000L", 2000L, samples.get(0).getTimestamp());
@@ -80,7 +80,7 @@ public class XORIteratorTests extends OpenSearchTestCase {
         XORIterator iterator = new XORIterator(chunk.bytes());
 
         // Test decoding with full range
-        List<Sample> samples = iterator.decodeSamples(0L, Long.MAX_VALUE);
+        List<Sample> samples = iterator.decodeSamples(0L, Long.MAX_VALUE).samples();
 
         assertEquals(samples, List.of(new FloatSample(1000L, 10.0), new FloatSample(2000L, 20.0), new FloatSample(3000L, 30.0)));
     }
@@ -96,7 +96,7 @@ public class XORIteratorTests extends OpenSearchTestCase {
         XORIterator iterator = new XORIterator(chunk.bytes());
 
         // Test decoding with no matching range
-        List<Sample> samples = iterator.decodeSamples(5000L, 6000L);
+        List<Sample> samples = iterator.decodeSamples(5000L, 6000L).samples();
 
         assertTrue("Should have no samples in range", samples.isEmpty());
     }
@@ -112,7 +112,7 @@ public class XORIteratorTests extends OpenSearchTestCase {
         XORIterator iterator = new XORIterator(chunk.bytes());
 
         // Test decoding with exact boundaries [1000, 3000) - inclusive start, exclusive end
-        List<Sample> samples = iterator.decodeSamples(1000L, 3000L);
+        List<Sample> samples = iterator.decodeSamples(1000L, 3000L).samples();
 
         // Sample at 3000L is NOT included because maxTimestamp is exclusive
         assertEquals(samples, List.of(new FloatSample(1000L, 10.0), new FloatSample(2000L, 20.0)));
@@ -122,7 +122,7 @@ public class XORIteratorTests extends OpenSearchTestCase {
         XORChunk chunk = new XORChunk();
         XORIterator iterator = new XORIterator(chunk.bytes());
 
-        List<Sample> samples = iterator.decodeSamples(0L, Long.MAX_VALUE);
+        List<Sample> samples = iterator.decodeSamples(0L, Long.MAX_VALUE).samples();
 
         assertTrue("Should have no samples from empty chunk", samples.isEmpty());
     }
@@ -135,7 +135,7 @@ public class XORIteratorTests extends OpenSearchTestCase {
 
         XORIterator iterator = new XORIterator(chunk.bytes());
 
-        List<Sample> samples = iterator.decodeSamples(1000L, 2000L);
+        List<Sample> samples = iterator.decodeSamples(1000L, 2000L).samples();
 
         assertEquals("Should have 1 sample", 1, samples.size());
         assertEquals("Sample timestamp", 1500L, samples.get(0).getTimestamp());
@@ -156,14 +156,14 @@ public class XORIteratorTests extends OpenSearchTestCase {
         XORIterator iterator = new XORIterator(chunk1.bytes());
 
         // Test first chunk
-        List<Sample> samples1 = iterator.decodeSamples(0L, Long.MAX_VALUE);
+        List<Sample> samples1 = iterator.decodeSamples(0L, Long.MAX_VALUE).samples();
         assertEquals(samples1, List.of(new FloatSample(1000L, 10.0), new FloatSample(2000L, 20.0)));
 
         // Reset with second chunk
         iterator.reset(chunk2.bytes());
 
         // Test second chunk
-        List<Sample> samples2 = iterator.decodeSamples(0L, Long.MAX_VALUE);
+        List<Sample> samples2 = iterator.decodeSamples(0L, Long.MAX_VALUE).samples();
         assertEquals(samples2, List.of(new FloatSample(3000L, 30.0), new FloatSample(4000L, 40.0)));
     }
 
@@ -173,7 +173,7 @@ public class XORIteratorTests extends OpenSearchTestCase {
 
         // Should handle gracefully
         assertEquals("Should return NONE for invalid data", ChunkIterator.ValueType.NONE, iterator.next());
-        assertTrue("Should have no samples from invalid data", iterator.decodeSamples(0L, Long.MAX_VALUE).isEmpty());
+        assertTrue("Should have no samples from invalid data", iterator.decodeSamples(0L, Long.MAX_VALUE).samples().isEmpty());
     }
 
     public void testChunkIteratorDecodeSamplesExceptionHandling() {
@@ -213,5 +213,70 @@ public class XORIteratorTests extends OpenSearchTestCase {
         // Test RuntimeException path
         ChunkIterator runtimeIterator = iteratorCreator.apply(new RuntimeException("Test error"));
         assertThrows(RuntimeException.class, () -> runtimeIterator.decodeSamples(0L, Long.MAX_VALUE));
+    }
+
+    public void testProcessedSampleCountAllInRange() {
+        // Test that processedSampleCount equals returned samples when all are in range
+        XORChunk chunk = new XORChunk();
+        XORAppender appender = (XORAppender) chunk.appender();
+        appender.append(1000L, 10.0);
+        appender.append(2000L, 20.0);
+        appender.append(3000L, 30.0);
+
+        XORIterator iterator = new XORIterator(chunk.bytes());
+        ChunkIterator.DecodeResult result = iterator.decodeSamples(0L, Long.MAX_VALUE);
+
+        assertEquals("Should have 3 samples", 3, result.samples().size());
+        assertEquals("Should have processed 3 samples", 3, result.processedSampleCount());
+    }
+
+    public void testProcessedSampleCountPartialRange() {
+        // Test that processedSampleCount counts all processed samples, not just returned ones
+        XORChunk chunk = new XORChunk();
+        XORAppender appender = (XORAppender) chunk.appender();
+        appender.append(1000L, 10.0);
+        appender.append(2000L, 20.0);
+        appender.append(3000L, 30.0);
+        appender.append(4000L, 40.0);
+        appender.append(5000L, 50.0);
+
+        XORIterator iterator = new XORIterator(chunk.bytes());
+        // Request range [1500, 3500) - should return only 2000 and 3000
+        ChunkIterator.DecodeResult result = iterator.decodeSamples(1500L, 4000L);
+
+        assertEquals("Should have 2 samples in range", 2, result.samples().size());
+        assertEquals("Should have processed 4 samples (1000, 2000, 3000, 4000)", 4, result.processedSampleCount());
+    }
+
+    public void testProcessedSampleCountBeforeRange() {
+        // Test that samples before the range are counted as processed
+        XORChunk chunk = new XORChunk();
+        XORAppender appender = (XORAppender) chunk.appender();
+        appender.append(1000L, 10.0);
+        appender.append(2000L, 20.0);
+        appender.append(3000L, 30.0);
+
+        XORIterator iterator = new XORIterator(chunk.bytes());
+        // Request range starting at 2500 - should skip 1000 and 2000
+        ChunkIterator.DecodeResult result = iterator.decodeSamples(2500L, Long.MAX_VALUE);
+
+        assertEquals("Should have 1 sample in range", 1, result.samples().size());
+        assertEquals("Should have processed all 3 samples", 3, result.processedSampleCount());
+    }
+
+    public void testProcessedSampleCountEmptyResult() {
+        // Test that processedSampleCount is correct even when no samples are returned
+        XORChunk chunk = new XORChunk();
+        XORAppender appender = (XORAppender) chunk.appender();
+        appender.append(1000L, 10.0);
+        appender.append(2000L, 20.0);
+        appender.append(3000L, 30.0);
+
+        XORIterator iterator = new XORIterator(chunk.bytes());
+        // Request range with no matching samples
+        ChunkIterator.DecodeResult result = iterator.decodeSamples(5000L, 6000L);
+
+        assertEquals("Should have 0 samples in range", 0, result.samples().size());
+        assertEquals("Should have processed 3 samples until exhausted", 3, result.processedSampleCount());
     }
 }
