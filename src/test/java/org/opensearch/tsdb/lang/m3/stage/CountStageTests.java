@@ -12,20 +12,17 @@ import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.search.aggregations.InternalAggregation;
 import org.opensearch.test.AbstractWireSerializingTestCase;
-import org.opensearch.tsdb.core.model.ByteLabels;
-import org.opensearch.tsdb.core.model.FloatSample;
-import org.opensearch.tsdb.core.model.Labels;
-import org.opensearch.tsdb.core.model.Sample;
-import org.opensearch.tsdb.query.aggregator.InternalTimeSeries;
 import org.opensearch.tsdb.query.aggregator.TimeSeries;
 import org.opensearch.tsdb.query.aggregator.TimeSeriesProvider;
 import org.opensearch.tsdb.query.stage.PipelineStage;
 import org.opensearch.tsdb.query.stage.PipelineStageFactory;
 
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+
+import static org.opensearch.tsdb.lang.m3.stage.StageTestUtils.createMockAggregations;
+import static org.opensearch.tsdb.lang.m3.stage.StageTestUtils.createTimeSeries;
 
 // TODO refactor Test Case for all subclasses for AbstractGroupingStage
 public class CountStageTests extends AbstractWireSerializingTestCase<CountStage> {
@@ -201,6 +198,7 @@ public class CountStageTests extends AbstractWireSerializingTestCase<CountStage>
     }
 
     // Comprehensive test data - all tests use this same dataset
+    // Note: CountStageTests uses different values than the standard TEST_TIME_SERIES
     private static final List<TimeSeries> TEST_TIME_SERIES = List.of(
         createTimeSeries("ts1", Map.of("region", "us-east", "service", "api"), List.of(10.0, 10.0, 10.0)),
         createTimeSeries("ts2", Map.of("region", "us-west", "service", "api"), List.of(20.0, 20.0, 20.0)),
@@ -208,23 +206,6 @@ public class CountStageTests extends AbstractWireSerializingTestCase<CountStage>
         createTimeSeries("ts4", Map.of("service", "service2", "region", "us-central"), List.of(3.0, 3.0, 3.0)),
         createTimeSeries("ts5", Map.of("region", "us-east"), List.of(1.0)) // No service label
     );
-
-    private static TimeSeries createTimeSeries(String alias, Map<String, String> labels, List<Double> values) {
-        List<Sample> samples = new ArrayList<>();
-        for (int i = 0; i < values.size(); i++) {
-            samples.add(new FloatSample(1000L + i * 1000, values.get(i)));
-        }
-
-        Labels labelMap = labels.isEmpty() ? ByteLabels.emptyLabels() : ByteLabels.fromMap(labels);
-        return new TimeSeries(samples, labelMap, 1000L, 1000L + (values.size() - 1) * 1000, 1000L, alias);
-    }
-
-    private List<TimeSeriesProvider> createMockAggregations(List<TimeSeries> series1, List<TimeSeries> series2) {
-        TimeSeriesProvider provider1 = new InternalTimeSeries("test1", series1, Map.of());
-        TimeSeriesProvider provider2 = new InternalTimeSeries("test2", series2, Map.of());
-
-        return List.of(provider1, provider2);
-    }
 
     public void testToXContent() throws Exception {
         CountStage stage = new CountStage("service");

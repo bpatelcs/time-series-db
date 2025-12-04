@@ -46,6 +46,7 @@ import org.opensearch.tsdb.lang.m3.stage.SortStage;
 import org.opensearch.tsdb.lang.m3.stage.SubtractStage;
 import org.opensearch.tsdb.lang.m3.stage.SummarizeStage;
 import org.opensearch.tsdb.lang.m3.stage.SumStage;
+import org.opensearch.tsdb.lang.m3.stage.MultiplyStage;
 import org.opensearch.tsdb.lang.m3.stage.TimeshiftStage;
 import org.opensearch.tsdb.lang.m3.stage.TransformNullStage;
 import org.opensearch.tsdb.lang.m3.stage.TruncateStage;
@@ -216,7 +217,7 @@ public class SourceBuilderVisitor extends M3PlanVisitor<SourceBuilderVisitor.Com
             case AggregationType.AVG -> new AvgStage(planNode.getTags());
             case AggregationType.MIN -> new MinStage(planNode.getTags());
             case AggregationType.MAX -> new MaxStage(planNode.getTags());
-            case AggregationType.MULTIPLY -> throw new UnsupportedOperationException("multiply aggregation not yet implemented");
+            case AggregationType.MULTIPLY -> new MultiplyStage(planNode.getTags());
             case AggregationType.COUNT -> new CountStage(planNode.getTags());
         };
 

@@ -23,6 +23,7 @@ import org.opensearch.tsdb.lang.m3.stage.KeepLastValueStage;
 import org.opensearch.tsdb.lang.m3.stage.MaxStage;
 import org.opensearch.tsdb.lang.m3.stage.MinStage;
 import org.opensearch.tsdb.lang.m3.stage.MovingStage;
+import org.opensearch.tsdb.lang.m3.stage.MultiplyStage;
 import org.opensearch.tsdb.lang.m3.stage.PerSecondStage;
 import org.opensearch.tsdb.lang.m3.stage.PerSecondRateStage;
 import org.opensearch.tsdb.lang.m3.stage.PercentileOfSeriesStage;
@@ -119,6 +120,7 @@ public class PipelineStageFactory {
             registerStage(MaxStage.class);
             registerStage(MinStage.class);
             registerStage(MovingStage.class);
+            registerStage(MultiplyStage.class);
             registerStage(PercentileOfSeriesStage.class);
             registerStage(PerSecondStage.class);
             registerStage(PerSecondRateStage.class);
