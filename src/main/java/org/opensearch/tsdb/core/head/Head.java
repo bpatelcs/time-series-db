@@ -283,6 +283,34 @@ public class Head implements Closeable {
     }
 
     /**
+     * Cleans up a deleted series by removing it from both the SeriesMap and LiveSeriesIndex.
+     *
+     * @param series the deleted series to clean up
+     */
+    void cleanupDeletedSeries(MemSeries series) {
+        if (!series.isDeleted()) {
+            return;
+        }
+
+        series.lock();
+        try {
+            // Check if this series is still in the map - another thread may have already cleaned it up
+            if (seriesMap.getByReference(series.getReference()) != series) {
+                return; // Already cleaned up or replaced
+            }
+
+            try {
+                liveSeriesIndex.removeSeries(List.of(series.getReference()));
+                seriesMap.delete(series);
+            } catch (Exception e) {
+                throw new TSDBTragicException("Failed to remove deleted series from live series index: ref=" + series.getReference(), e);
+            }
+        } finally {
+            series.unlock();
+        }
+    }
+
+    /**
      * Get the LiveSeriesIndex for search operations.
      *
      * @return the LiveSeriesIndex instance
@@ -451,6 +479,11 @@ public class Head implements Closeable {
                     continue; // cannot gc series that must be loaded for translog replay
                 }
 
+                // Atomically try to mark series as deleted (only succeeds if refCount == 0)
+                if (!series.tryMarkDeleted()) {
+                    continue; // Has active references, skip
+                }
+
                 // TODO: Consider proactively removing MemSeries with no chunks. Currently translog replay requires all series that may be
                 // appended to be present, and LiveSeriesIndex is used to load them on server start. If we remove them here, it
                 // doesn't change the peak memory usage that would be seen after load. However, can reduce the memory footprint
@@ -600,23 +633,40 @@ public class Head implements Closeable {
                     validateOOO(timestamp, failureCallback);
                 }
 
-                MemSeries series = head.getSeriesMap().getByReference(reference);
+                // Retry loop to handle race with series deletion
+                while (true) {
+                    MemSeries series = head.getSeriesMap().getByReference(reference);
 
-                // Check if we need to create a new series or upgrade an existing stub
-                boolean needsCreationOrUpgrade = series == null
-                    || series.isFailed()
-                    || (series.isStub() && labels != null && !labels.isEmpty());
+                    // Check if we need to create a new series or upgrade an existing stub
+                    boolean needsCreationOrUpgrade = series == null
+                        || series.isFailed()
+                        || (series.isStub() && labels != null && !labels.isEmpty());
 
-                if (needsCreationOrUpgrade) {
-                    // If recovery with no labels, allow stub creation; otherwise require labels
-                    if (!origin.isRecovery() && (labels == null || labels.isEmpty())) {
-                        throw new TSDBEmptyLabelException("Labels cannot be empty for ref: " + reference + ", timestamp: " + timestamp);
+                    if (needsCreationOrUpgrade) {
+                        // If recovery with no labels, allow stub creation; otherwise require labels
+                        if (!origin.isRecovery() && (labels == null || labels.isEmpty())) {
+                            throw new TSDBEmptyLabelException("Labels cannot be empty for ref: " + reference + ", timestamp: " + timestamp);
+                        }
+                        Head.SeriesResult seriesResult = head.getOrCreateSeries(reference, labels, timestamp);
+                        series = seriesResult.series();
+                        seriesCreated = seriesResult.created();
                     }
-                    Head.SeriesResult seriesResult = head.getOrCreateSeries(reference, labels, timestamp);
-                    series = seriesResult.series();
-                    seriesCreated = seriesResult.created();
+
+                    // Try to increment reference count atomically
+                    if (series.tryIncRef()) {
+                        this.series = series;
+                        break; // Success
+                    }
+
+                    // tryIncRef failed - series was deleted by another thread (dropEmptySeries)
+                    // cleanup early to immediately unblock ingestion, instead of waiting for the dropEmptySeries thread to finish deleting
+                    if (series.isDeleted()) {
+                        head.cleanupDeletedSeries(series);
+                    }
+
+                    seriesCreated = false;
                 }
-                this.series = series;
+
                 head.updateMaxSeenTimestamp(timestamp);
 
                 // During translog replay, skip appending samples for series that have already been mmaped beyond the sample timestamp.
@@ -633,6 +683,10 @@ public class Head implements Closeable {
                 this.seqNo = seqNo;
                 return seriesCreated;
             } catch (Exception e) {
+                if (this.series != null) {
+                    this.series.decRef();
+                }
+
                 // Mark series as failed if this thread created it
                 if (this.series != null && seriesCreated) {
                     head.markSeriesAsFailed(this.series);
@@ -690,30 +744,35 @@ public class Head implements Closeable {
                 throw new RuntimeException("Append failed due to missing series");
             }
 
-            if (!seriesCreated) {
-                // if this thread did not create the series, wait to ensure the series' labels are persisted to the translog
-                series.awaitPersisted();
-
-                // check if series is marked as failed after latch is counted down
-                if (series.isFailed()) {
-                    failureCallback.run();
-                    throw new RuntimeException("Append failed due to failed series");
-                }
-            }
-
-            series.lock();
             try {
-                // Execute the callback to write to translog under the series lock.
-                executeCallback(callback, failureCallback);
+                if (!seriesCreated) {
+                    // if this thread did not create the series, wait to ensure the series' labels are persisted to the translog
+                    series.awaitPersisted();
 
-                if (sample == null) {
-                    return false;
+                    // check if series is marked as failed after latch is counted down
+                    if (series.isFailed()) {
+                        failureCallback.run();
+                        throw new RuntimeException("Append failed due to failed series");
+                    }
                 }
 
-                series.append(seqNo, sample.getTimestamp(), sample.getValue(), context.options());
-                return true;
+                series.lock();
+                try {
+                    // Execute the callback to write to translog under the series lock.
+                    executeCallback(callback, failureCallback);
+
+                    if (sample == null) {
+                        return false;
+                    }
+
+                    series.append(seqNo, sample.getTimestamp(), sample.getValue(), context.options());
+                    return true;
+                } finally {
+                    series.unlock();
+                }
             } finally {
-                series.unlock();
+                // Decrement reference count after the append operation completes (success or failure)
+                series.decRef();
             }
         }
 

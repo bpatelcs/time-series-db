@@ -16,6 +16,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -51,6 +52,11 @@ public class MemSeries {
 
     // The seqNo corresponding to the most recent operation appended to this series
     private long maxSeqNo;
+
+    // Reference count for tracking active operations on this series
+    private final AtomicInteger refCount = new AtomicInteger(0);
+    // DELETED (-1) indicates the series is marked for deletion
+    private static final int DELETED = -1;
 
     /**
      * Constructs a new MemSeries instance.
@@ -222,6 +228,54 @@ public class MemSeries {
      */
     public void unlock() {
         seriesLock.unlock();
+    }
+
+    /**
+     * Try to increment the reference count. Returns false if the series is deleted.
+     * @return true if successfully incremented, false if series is deleted
+     */
+    public boolean tryIncRef() {
+        while (true) {
+            int current = refCount.get();
+            if (current == DELETED) {
+                return false;
+            }
+            if (refCount.compareAndSet(current, current + 1)) {
+                return true;
+            }
+        }
+    }
+
+    /**
+     * Decrement the reference count. Call this when finishing an operation on the series.
+     */
+    public void decRef() {
+        int rc = refCount.decrementAndGet();
+        assert rc >= 0 : "refCount must not go below zero";
+    }
+
+    /**
+     * Try to mark the series as deleted. Returns false if refCount > 0.
+     * @return true if successfully marked as deleted, false if has active references
+     */
+    public boolean tryMarkDeleted() {
+        return refCount.compareAndSet(0, DELETED);
+    }
+
+    /**
+     * Check if the series is marked as deleted.
+     * @return true if the series is deleted
+     */
+    public boolean isDeleted() {
+        return refCount.get() == DELETED;
+    }
+
+    /**
+     * Get the current reference count.
+     * @return the current reference count
+     */
+    public int getRefCount() {
+        return refCount.get();
     }
 
     /**

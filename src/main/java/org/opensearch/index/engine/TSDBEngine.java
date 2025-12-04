@@ -397,6 +397,13 @@ public class TSDBEngine extends Engine {
                     context.failureException != null ? context.failureException.toString() : "unknown failure"
                 );
                 context.translogLocation = translogManager.add(new Translog.NoOp(noOp.seqNo(), noOp.primaryTerm(), noOp.reason()));
+                logger.info(
+                    "Writing NoOp to translog: seqNo={}, primaryTerm={}, origin={}, reason={}",
+                    noOp.seqNo(),
+                    noOp.primaryTerm(),
+                    indexOp.origin(),
+                    noOp.reason()
+                );
             }
             localCheckpointTracker.markSeqNoAsProcessed(indexOp.seqNo());
             if (context.translogLocation == null) {

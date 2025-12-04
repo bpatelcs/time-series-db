@@ -25,6 +25,7 @@ import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.TSDBEmptyLabelException;
 import org.opensearch.index.engine.TSDBOutOfOrderException;
+import org.opensearch.index.engine.TSDBTragicException;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.threadpool.FixedExecutorBuilder;
 import org.opensearch.threadpool.TestThreadPool;
@@ -1553,6 +1554,502 @@ public class HeadTests extends OpenSearchTestCase {
 
         head.close();
         cm.close();
+    }
+
+    /**
+     * Test that a series with an active reference (ongoing append operation) is not removed
+     * during closeHeadChunks, even when it would be eligible for removal based on sequence number.
+     */
+    public void testSeriesNotRemovedDuringActiveAppend() throws IOException, InterruptedException {
+        ShardId shardId = new ShardId("headTest", "headTestUid", 0);
+        Path metricsPath = createTempDir("metricsStore");
+        ClosedChunkIndexManager closedChunkIndexManager = new ClosedChunkIndexManager(
+            metricsPath,
+            new InMemoryMetadataStore(),
+            new NOOPRetention(),
+            new NoopCompaction(),
+            threadPool,
+            shardId,
+            defaultSettings
+        );
+        Head head = new Head(metricsPath, shardId, closedChunkIndexManager, defaultSettings);
+
+        // Create first series with higher seqNo samples to establish minSeqNoToKeep
+        Labels series1Labels = ByteLabels.fromStrings("k1", "v1", "series", "1");
+        long series1Ref = series1Labels.stableHash();
+
+        for (int i = 1; i < 20; i++) {
+            Head.HeadAppender appender = head.newAppender();
+            appender.preprocess(Engine.Operation.Origin.PRIMARY, i, series1Ref, series1Labels, i * 1000L, i * 10.0, () -> {});
+            appender.append(() -> {}, () -> {});
+        }
+
+        // This creates a series with maxSeqNo=0 that's eligible for removal
+        Labels series2Labels = ByteLabels.fromStrings("k1", "v1", "series", "2");
+        long series2Ref = series2Labels.stableHash();
+        head.getOrCreateSeries(series2Ref, series2Labels, 0L);
+
+        assertEquals("Two series should exist", 2, head.getNumSeries());
+        assertNotNull("Series 2 should exist", head.getSeriesMap().getByReference(series2Ref));
+
+        // First flush to close chunks and establish minSeqNoToKeep
+        head.closeHeadChunks(true);
+
+        // Series 2 should be removed after first flush (maxSeqNo=0 < minSeqNoToKeep)
+        assertNull("Series 2 should be removed after first flush", head.getSeriesMap().getByReference(series2Ref));
+        assertEquals("Only one series should remain", 1, head.getNumSeries());
+
+        // Recreate series2 without samples (eligible for removal based on seqNo)
+        head.getOrCreateSeries(series2Ref, series2Labels, 0L);
+
+        assertEquals("Two series should exist again", 2, head.getNumSeries());
+        MemSeries series2 = head.getSeriesMap().getByReference(series2Ref);
+        series2.markPersisted();
+        assertNotNull("Series 2 should exist", series2);
+        assertEquals("Series 2 refCount should be 0", 0, series2.getRefCount());
+
+        // Start a new append operation on series2 - call preprocess but NOT append yet
+        // This should increment refCount, protecting the series from removal
+        Head.HeadAppender appender2 = head.newAppender();
+        appender2.preprocess(Engine.Operation.Origin.PRIMARY, 0, series2Ref, series2Labels, 20000L, 70.0, () -> {});
+
+        // Verify refCount is incremented
+        assertEquals("Series 2 refCount should be 1 after preprocess", 1, series2.getRefCount());
+
+        // Series2 (maxSeqNo=0) would be eligible for removal, but refCount > 0 should protect it
+        head.closeHeadChunks(true);
+
+        // Series 2 should NOT be removed because it has an active reference (refCount > 0)
+        assertNotNull("Series 2 should NOT be removed due to active refCount", head.getSeriesMap().getByReference(series2Ref));
+        assertEquals("Two series should still exist", 2, head.getNumSeries());
+        assertEquals("Series 2 refCount should still be 1", 1, series2.getRefCount());
+
+        // Now complete the append operation - this should decrement refCount
+        appender2.append(() -> {}, () -> {});
+
+        // Verify refCount is decremented
+        assertEquals("Series 2 refCount should be 0 after append", 0, series2.getRefCount());
+
+        // Verify series2 still exists and has the appended sample
+        MemSeries series2Final = head.getSeriesMap().getByReference(series2Ref);
+        assertNotNull("Series 2 should still exist after append", series2Final);
+        assertEquals("Series 2 should have maxSeqNo=0", 0, series2Final.getMaxSeqNo());
+
+        head.close();
+        closedChunkIndexManager.close();
+    }
+
+    /**
+     * Test that refCount is properly decremented when preprocess throws an exception after incRef.
+     */
+    @SuppressForbidden(reason = "reflection usage is required here")
+    public void testRefCountDecrementedWhenPreprocessThrows() throws Exception {
+        ShardId shardId = new ShardId("headTest", "headTestUid", 0);
+        Path metricsPath = createTempDir("metricsStore");
+        ClosedChunkIndexManager closedChunkIndexManager = new ClosedChunkIndexManager(
+            metricsPath,
+            new InMemoryMetadataStore(),
+            new NOOPRetention(),
+            new NoopCompaction(),
+            threadPool,
+            shardId,
+            defaultSettings
+        );
+        Head head = Mockito.spy(new Head(metricsPath, shardId, closedChunkIndexManager, defaultSettings));
+
+        // Create a series first
+        Labels labels = ByteLabels.fromStrings("k1", "v1", "k2", "v2");
+        long ref = labels.stableHash();
+
+        Head.HeadAppender appender1 = head.newAppender();
+        appender1.preprocess(Engine.Operation.Origin.PRIMARY, 0, ref, labels, 1000L, 100.0, () -> {});
+        appender1.append(() -> {}, () -> {});
+
+        MemSeries series = head.getSeriesMap().getByReference(ref);
+        assertNotNull("Series should exist", series);
+        assertEquals("RefCount should be 0 after successful append", 0, series.getRefCount());
+
+        // Make updateMaxSeenTimestamp throw an exception (this is called after incRef in preprocess)
+        RuntimeException testException = new RuntimeException("Test exception after incRef");
+        Mockito.doThrow(testException).when(head).updateMaxSeenTimestamp(Mockito.anyLong());
+
+        // Call preprocess on the existing series - should throw but decRef should be called
+        Head.HeadAppender appender2 = head.newAppender();
+        RuntimeException thrown = assertThrows(
+            RuntimeException.class,
+            () -> appender2.preprocess(Engine.Operation.Origin.PRIMARY, 1, ref, labels, 2000L, 200.0, () -> {})
+        );
+        assertEquals("Test exception after incRef", thrown.getMessage());
+
+        // Verify refCount is still 0 (was incremented then decremented in catch block)
+        assertEquals("RefCount should be 0 after preprocess exception (decRef was called)", 0, series.getRefCount());
+
+        // Reset the mock to allow normal operation for cleanup
+        Mockito.reset(head);
+
+        head.close();
+        closedChunkIndexManager.close();
+    }
+
+    /**
+     * Test that the retry loop in preprocess handles deleted series correctly.
+     * When a series is marked as deleted (refCount == DELETED), preprocess should:
+     * 1. Detect tryIncRef() failure
+     * 2. Call cleanupDeletedSeries to remove from both seriesMap and liveSeriesIndex
+     * 3. Retry and create a new series
+     */
+    public void testPreprocessRetryOnDeletedSeries() throws Exception {
+        ShardId shardId = new ShardId("headTest", "headTestUid", 0);
+        Path metricsPath = createTempDir("metricsStore");
+        ClosedChunkIndexManager closedChunkIndexManager = new ClosedChunkIndexManager(
+            metricsPath,
+            new InMemoryMetadataStore(),
+            new NOOPRetention(),
+            new NoopCompaction(),
+            threadPool,
+            shardId,
+            defaultSettings
+        );
+        Head head = new Head(metricsPath, shardId, closedChunkIndexManager, defaultSettings);
+
+        Labels labels = ByteLabels.fromStrings("k1", "v1", "k2", "v2");
+        long ref = labels.stableHash();
+
+        // Create a series
+        Head.HeadAppender appender1 = head.newAppender();
+        appender1.preprocess(Engine.Operation.Origin.PRIMARY, 0, ref, labels, 1000L, 100.0, () -> {});
+        appender1.append(() -> {}, () -> {});
+
+        MemSeries series1 = head.getSeriesMap().getByReference(ref);
+        assertNotNull("Series should exist", series1);
+        assertEquals("RefCount should be 0", 0, series1.getRefCount());
+
+        assertTrue("tryMarkDeleted should succeed", series1.tryMarkDeleted());
+        assertTrue("Series should be marked as deleted", series1.isDeleted());
+
+        Head.HeadAppender appender2 = head.newAppender();
+        boolean created = appender2.preprocess(Engine.Operation.Origin.PRIMARY, 1, ref, labels, 2000L, 200.0, () -> {});
+
+        // A new series should be created because the old one was deleted
+        assertTrue("New series should be created", created);
+
+        MemSeries series2 = head.getSeriesMap().getByReference(ref);
+        assertNotNull("New series should exist in map", series2);
+        assertNotSame("Should be a different series instance", series1, series2);
+        assertFalse("New series should not be deleted", series2.isDeleted());
+        assertEquals("New series refCount should be 1 (from preprocess)", 1, series2.getRefCount());
+
+        // Complete the append
+        appender2.append(() -> {}, () -> {});
+        assertEquals("RefCount should be 0 after append", 0, series2.getRefCount());
+
+        head.close();
+        closedChunkIndexManager.close();
+    }
+
+    /**
+     * Test that cleanupDeletedSeries returns early if series is not deleted.
+     */
+    public void testCleanupDeletedSeriesSkipsNonDeletedSeries() throws Exception {
+        ShardId shardId = new ShardId("headTest", "headTestUid", 0);
+        Path metricsPath = createTempDir("metricsStore");
+        ClosedChunkIndexManager closedChunkIndexManager = new ClosedChunkIndexManager(
+            metricsPath,
+            new InMemoryMetadataStore(),
+            new NOOPRetention(),
+            new NoopCompaction(),
+            threadPool,
+            shardId,
+            defaultSettings
+        );
+        Head head = new Head(metricsPath, shardId, closedChunkIndexManager, defaultSettings);
+
+        Labels labels = ByteLabels.fromStrings("k1", "v1", "k2", "v2");
+        long ref = labels.stableHash();
+
+        // Create a series (not deleted)
+        head.getOrCreateSeries(ref, labels, 1000L);
+        MemSeries series = head.getSeriesMap().getByReference(ref);
+        assertNotNull("Series should exist", series);
+        assertFalse("Series should not be deleted", series.isDeleted());
+
+        // Call cleanupDeletedSeries on a non-deleted series - should return early
+        head.cleanupDeletedSeries(series);
+
+        // Series should still be in the map (not cleaned up)
+        assertSame("Series should still be in map", series, head.getSeriesMap().getByReference(ref));
+
+        head.close();
+        closedChunkIndexManager.close();
+    }
+
+    /**
+     * Test that cleanupDeletedSeries returns early if series is already cleaned up by another thread.
+     */
+    public void testCleanupDeletedSeriesSkipsAlreadyCleanedUp() throws Exception {
+        ShardId shardId = new ShardId("headTest", "headTestUid", 0);
+        Path metricsPath = createTempDir("metricsStore");
+        ClosedChunkIndexManager closedChunkIndexManager = new ClosedChunkIndexManager(
+            metricsPath,
+            new InMemoryMetadataStore(),
+            new NOOPRetention(),
+            new NoopCompaction(),
+            threadPool,
+            shardId,
+            defaultSettings
+        );
+        Head head = new Head(metricsPath, shardId, closedChunkIndexManager, defaultSettings);
+
+        Labels labels = ByteLabels.fromStrings("k1", "v1", "k2", "v2");
+        long ref = labels.stableHash();
+
+        // Create a series and mark it deleted
+        head.getOrCreateSeries(ref, labels, 1000L);
+        MemSeries series1 = head.getSeriesMap().getByReference(ref);
+        assertTrue("tryMarkDeleted should succeed", series1.tryMarkDeleted());
+
+        // Simulate another thread already cleaning it up - remove from map and create new series
+        head.getSeriesMap().delete(series1);
+        head.getOrCreateSeries(ref, labels, 2000L);
+        MemSeries series2 = head.getSeriesMap().getByReference(ref);
+        assertNotSame("Should be different series", series1, series2);
+
+        // Call cleanupDeletedSeries on the old deleted series - should return early
+        // because map now contains a different series
+        head.cleanupDeletedSeries(series1);
+
+        // New series should still be in the map (not affected)
+        assertSame("New series should still be in map", series2, head.getSeriesMap().getByReference(ref));
+        assertFalse("New series should not be deleted", series2.isDeleted());
+
+        head.close();
+        closedChunkIndexManager.close();
+    }
+
+    /**
+     * Test that cleanupDeletedSeries throws TSDBTragicException when liveSeriesIndex.removeSeries fails.
+     */
+    @SuppressForbidden(reason = "reflection usage is required here")
+    public void testCleanupDeletedSeriesHandlesLiveSeriesIndexException() throws Exception {
+        ShardId shardId = new ShardId("headTest", "headTestUid", 0);
+        Path metricsPath = createTempDir("metricsStore");
+        ClosedChunkIndexManager closedChunkIndexManager = new ClosedChunkIndexManager(
+            metricsPath,
+            new InMemoryMetadataStore(),
+            new NOOPRetention(),
+            new NoopCompaction(),
+            threadPool,
+            shardId,
+            defaultSettings
+        );
+        Head head = new Head(metricsPath, shardId, closedChunkIndexManager, defaultSettings);
+
+        Labels labels = ByteLabels.fromStrings("k1", "v1", "k2", "v2");
+        long ref = labels.stableHash();
+
+        // Create a series
+        Head.HeadAppender appender = head.newAppender();
+        appender.preprocess(Engine.Operation.Origin.PRIMARY, 0, ref, labels, 1000L, 100.0, () -> {});
+        appender.append(() -> {}, () -> {});
+
+        MemSeries series = head.getSeriesMap().getByReference(ref);
+        assertNotNull("Series should exist", series);
+
+        // Mark as deleted
+        assertTrue("tryMarkDeleted should succeed", series.tryMarkDeleted());
+
+        // Spy on liveSeriesIndex to throw exception
+        LiveSeriesIndex originalLiveSeriesIndex = head.getLiveSeriesIndex();
+        LiveSeriesIndex spyLiveSeriesIndex = Mockito.spy(originalLiveSeriesIndex);
+        Mockito.doThrow(new IOException("Simulated failure")).when(spyLiveSeriesIndex).removeSeries(Mockito.anyList());
+
+        // Replace liveSeriesIndex with spy using reflection
+        java.lang.reflect.Field liveSeriesIndexField = Head.class.getDeclaredField("liveSeriesIndex");
+        liveSeriesIndexField.setAccessible(true);
+        liveSeriesIndexField.set(head, spyLiveSeriesIndex);
+
+        // cleanupDeletedSeries should throw TSDBTragicException when removeSeries fails
+        TSDBTragicException exception = expectThrows(TSDBTragicException.class, () -> head.cleanupDeletedSeries(series));
+        assertTrue("Exception message should mention failed removal", exception.getMessage().contains("Failed to remove deleted series"));
+        assertTrue("Exception should have IOException as cause", exception.getCause() instanceof IOException);
+
+        // Series should still be in the map since the exception prevented deletion
+        assertNotNull("Series should still be in map after exception", head.getSeriesMap().getByReference(ref));
+
+        // Restore original for cleanup
+        liveSeriesIndexField.set(head, originalLiveSeriesIndex);
+
+        head.close();
+        closedChunkIndexManager.close();
+    }
+
+    /**
+     * Test that tryMarkDeleted fails when refCount > 0 (active references).
+     */
+    public void testTryMarkDeletedFailsWithActiveReferences() throws IOException, InterruptedException {
+        ShardId shardId = new ShardId("headTest", "headTestUid", 0);
+        Path metricsPath = createTempDir("metricsStore");
+        ClosedChunkIndexManager closedChunkIndexManager = new ClosedChunkIndexManager(
+            metricsPath,
+            new InMemoryMetadataStore(),
+            new NOOPRetention(),
+            new NoopCompaction(),
+            threadPool,
+            shardId,
+            defaultSettings
+        );
+        Head head = new Head(metricsPath, shardId, closedChunkIndexManager, defaultSettings);
+
+        Labels labels = ByteLabels.fromStrings("k1", "v1", "k2", "v2");
+        long ref = labels.stableHash();
+
+        // Create a series
+        head.getOrCreateSeries(ref, labels, 0L);
+        MemSeries series = head.getSeriesMap().getByReference(ref);
+        series.markPersisted();
+
+        // Start a preprocess (increments refCount)
+        Head.HeadAppender appender = head.newAppender();
+        appender.preprocess(Engine.Operation.Origin.PRIMARY, 0, ref, labels, 1000L, 100.0, () -> {});
+
+        assertEquals("RefCount should be 1", 1, series.getRefCount());
+
+        // Try to mark as deleted - should fail because refCount > 0
+        assertFalse("tryMarkDeleted should fail with active references", series.tryMarkDeleted());
+        assertFalse("Series should not be deleted", series.isDeleted());
+
+        // Complete the append
+        appender.append(() -> {}, () -> {});
+        assertEquals("RefCount should be 0 after append", 0, series.getRefCount());
+
+        // Now tryMarkDeleted should succeed
+        assertTrue("tryMarkDeleted should succeed now", series.tryMarkDeleted());
+        assertTrue("Series should be deleted", series.isDeleted());
+
+        head.close();
+        closedChunkIndexManager.close();
+    }
+
+    /**
+     * Test that refCount protects a series from deletion during an active append operation.
+     *
+     * Test flow:
+     * 1. Append thread calls preprocess() which increments refCount
+     * 2. Deletion thread waits for preprocess to complete, then tries closeHeadChunks()
+     * 3. tryMarkDeleted() should fail because refCount > 0
+     * 4. Append thread completes append()
+     *
+     * The test verifies that the original series is protected and not deleted.
+     */
+    public void testConcurrentAppendAndSeriesDeletion() throws Exception {
+        ShardId shardId = new ShardId("headTest", "headTestUid", 0);
+        Path metricsPath = createTempDir("testConcurrentAppendAndSeriesDeletion");
+        ClosedChunkIndexManager closedChunkIndexManager = new ClosedChunkIndexManager(
+            metricsPath,
+            new InMemoryMetadataStore(),
+            new NOOPRetention(),
+            new NoopCompaction(),
+            threadPool,
+            shardId,
+            defaultSettings
+        );
+        Head head = new Head(metricsPath, shardId, closedChunkIndexManager, defaultSettings);
+
+        // Base timestamp for this test - all timestamps should be relative to this
+        long baseTimestamp = 100_000L;
+
+        // Create a "high seqNo" series to establish minSeqNoToKeep during closeHeadChunks
+        // This makes other series with lower seqNo eligible for deletion
+        Labels highSeqNoLabels = ByteLabels.fromStrings("type", "anchor", "id", "1");
+        long highSeqNoRef = highSeqNoLabels.stableHash();
+        for (int i = 100; i < 120; i++) {
+            Head.HeadAppender appender = head.newAppender();
+            appender.preprocess(
+                Engine.Operation.Origin.PRIMARY,
+                i,
+                highSeqNoRef,
+                highSeqNoLabels,
+                baseTimestamp + i * 1000L,
+                i * 10.0,
+                () -> {}
+            );
+            appender.append(() -> {}, () -> {});
+        }
+
+        // First closeHeadChunks to close some chunks and establish minSeqNoToKeep
+        head.closeHeadChunks(true);
+
+        // Create a target series with low seqNo (eligible for deletion)
+        Labels targetLabels = ByteLabels.fromStrings("type", "target", "id", "1");
+        long targetRef = targetLabels.stableHash();
+
+        // Timestamp for target series: within OOO window
+        long targetTimestamp = baseTimestamp + 120_000L;
+
+        // Create the series with seqNo=0 (will be eligible for deletion based on minSeqNoToKeep)
+        Head.SeriesResult initialResult = head.getOrCreateSeries(targetRef, targetLabels, targetTimestamp);
+        MemSeries originalSeries = initialResult.series();
+        originalSeries.markPersisted();
+
+        // Latches to coordinate the test
+        CountDownLatch preprocessDoneLatch = new CountDownLatch(1);
+        CountDownLatch deletionDoneLatch = new CountDownLatch(1);
+
+        // Append thread: preprocess -> signal -> wait for deletion -> append
+        Thread appendThread = new Thread(() -> {
+            try {
+                Head.HeadAppender appender = head.newAppender();
+                // preprocess increments refCount
+                appender.preprocess(Engine.Operation.Origin.PRIMARY, 1, targetRef, targetLabels, targetTimestamp + 10, 42.0, () -> {});
+
+                // Signal that preprocess is done (refCount is now > 0)
+                preprocessDoneLatch.countDown();
+
+                // Wait for deletion attempt to complete
+                deletionDoneLatch.await();
+
+                // Complete the append
+                appender.append(() -> {}, () -> {});
+            } catch (Exception e) {
+                logger.error("Append thread failed", e);
+            }
+        });
+
+        // Deletion thread: wait for preprocess -> try delete -> signal done
+        Thread deletionThread = new Thread(() -> {
+            try {
+                // Wait for append thread to complete preprocess (refCount should be > 0)
+                preprocessDoneLatch.await();
+
+                // Try to delete - should fail for this series because refCount > 0
+                head.closeHeadChunks(true);
+            } catch (Exception e) {
+                logger.error("Deletion thread failed", e);
+            } finally {
+                deletionDoneLatch.countDown();
+            }
+        });
+
+        // Start both threads
+        appendThread.start();
+        deletionThread.start();
+
+        // Wait for completion
+        appendThread.join(5000);
+        deletionThread.join(5000);
+
+        // Verify the series was protected by refCount:
+        MemSeries finalSeries = head.getSeriesMap().getByReference(targetRef);
+        assertNotNull("Series must exist after append", finalSeries);
+        assertFalse("Series must not be marked as deleted", finalSeries.isDeleted());
+        assertEquals("RefCount should be 0 after append completes", 0, finalSeries.getRefCount());
+        assertSame("Series should be same instance (protected by refCount)", originalSeries, finalSeries);
+
+        // Verify the anchor series still exists
+        assertNotNull("Anchor series should still exist", head.getSeriesMap().getByReference(highSeqNoRef));
+
+        head.close();
+        closedChunkIndexManager.close();
     }
 
     /**
