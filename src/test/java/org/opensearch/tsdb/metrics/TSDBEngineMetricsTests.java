@@ -59,9 +59,10 @@ public class TSDBEngineMetricsTests extends OpenSearchTestCase {
         assertNotNull(metrics.seriesClosedTotal);
         assertNotNull(metrics.memChunksExpiredTotal);
         assertNotNull(metrics.memChunksClosedTotal);
+        assertNotNull(metrics.commitTotal);
 
-        // Verify registry calls for counters (9 counters total: 3 ingestion + 3 OOO + 3 lifecycle)
-        verify(registry, times(9)).createCounter(anyString(), anyString(), anyString());
+        // Verify registry calls for counters (10 counters total: 3 ingestion + 3 OOO + 3 lifecycle + commit)
+        verify(registry, times(10)).createCounter(anyString(), anyString(), anyString());
     }
 
     public void testInitializeCreatesAllHistograms() {

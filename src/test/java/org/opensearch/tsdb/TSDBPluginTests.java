@@ -68,7 +68,7 @@ public class TSDBPluginTests extends OpenSearchTestCase {
         List<Setting<?>> settings = plugin.getSettings();
 
         assertNotNull("Settings list should not be null", settings);
-        assertThat("Should have 11 settings", settings, hasSize(11));
+        assertThat("Should have 12 settings", settings, hasSize(12));
 
         // Verify TSDB_ENGINE_ENABLED is present
         assertTrue("Should contain TSDB_ENGINE_ENABLED setting", settings.contains(TSDBPlugin.TSDB_ENGINE_ENABLED));
@@ -90,6 +90,8 @@ public class TSDBPluginTests extends OpenSearchTestCase {
         assertTrue("Should contain TSDB_ENGINE_TIME_UNIT setting", settings.contains(TSDBPlugin.TSDB_ENGINE_TIME_UNIT));
 
         assertTrue("Should contain TSDB_ENGINE_OOO_CUTOFF setting", settings.contains(TSDBPlugin.TSDB_ENGINE_OOO_CUTOFF));
+
+        assertTrue("Should contain TSDB_ENGINE_COMMIT_INTERVAL setting", settings.contains(TSDBPlugin.TSDB_ENGINE_COMMIT_INTERVAL));
     }
 
     public void testTSDBEngineEnabledSetting() {

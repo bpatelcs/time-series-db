@@ -58,12 +58,10 @@ public class CompactionFactory {
      */
     public static Compaction create(IndexSettings indexSettings) {
         var compaction = getCompactionFor(indexSettings);
-        if (indexSettings.getScopedSettings().get(TSDBPlugin.TSDB_ENGINE_COMPACTION_FREQUENCY.getKey()) != null) {
-            indexSettings.getScopedSettings().addSettingsUpdateConsumer(TSDBPlugin.TSDB_ENGINE_COMPACTION_FREQUENCY, newFrequency -> {
-                logger.info("Updating compaction frequency to: {}", newFrequency);
-                compaction.setFrequency(newFrequency.getMillis());
-            });
-        }
+        indexSettings.getScopedSettings().addSettingsUpdateConsumer(TSDBPlugin.TSDB_ENGINE_COMPACTION_FREQUENCY, newFrequency -> {
+            logger.info("Updating compaction frequency to: {}", newFrequency);
+            compaction.setFrequency(newFrequency.getMillis());
+        });
         return compaction;
     }
 

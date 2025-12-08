@@ -295,6 +295,20 @@ public class TSDBPlugin extends Plugin implements SearchPlugin, EnginePlugin, Ac
     );
 
     /**
+     * Setting for the minimum interval between commit operations during flush. This decouples expensive index commit calls from
+     * frequent flush() calls required for async translog flush.
+     * <p>
+     * If a flush is triggered before this interval has elapsed, {@link org.opensearch.index.engine.TSDBEngine#flush(boolean, boolean)}
+     * will exit quickly and closeHeadChunks / index commit will be skipped.
+     */
+    public static final Setting<TimeValue> TSDB_ENGINE_COMMIT_INTERVAL = Setting.positiveTimeSetting(
+        "index.tsdb_engine.commit_interval",
+        TimeValue.timeValueSeconds(60),
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
      * Default constructor
      */
     public TSDBPlugin() {}
@@ -340,7 +354,8 @@ public class TSDBPlugin extends Plugin implements SearchPlugin, EnginePlugin, Ac
             TSDB_ENGINE_BLOCK_DURATION,
             TSDB_ENGINE_TIME_UNIT,
             TSDB_ENGINE_OOO_CUTOFF,
-            TSDB_ENGINE_LABEL_STORAGE_TYPE
+            TSDB_ENGINE_LABEL_STORAGE_TYPE,
+            TSDB_ENGINE_COMMIT_INTERVAL
         );
     }
 

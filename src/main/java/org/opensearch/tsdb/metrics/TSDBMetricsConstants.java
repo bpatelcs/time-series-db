@@ -63,6 +63,9 @@ public final class TSDBMetricsConstants {
     /** Histogram: Latency of flush operation */
     public static final String FLUSH_LATENCY = "tsdb.flush.latency";
 
+    /** Counter: Total number of commits (closeHeadChunks + commitSegmentInfos) */
+    public static final String COMMIT_TOTAL = "tsdb.commit.total";
+
     // ============================================
     // Aggregation Metrics (Query/Read Path)
     // ============================================
@@ -168,6 +171,7 @@ public final class TSDBMetricsConstants {
     public static final String MEMCHUNKS_MINSEQ_DESC = "Minimum sequence number among open in-memory chunks (recorded on flush)";
     public static final String CLOSEDCHUNKS_SIZE_DESC = "Size histogram (bytes) of closed chunks persisted to disk";
     public static final String FLUSH_LATENCY_DESC = "Latency of flush operation";
+    public static final String COMMIT_TOTAL_DESC = "Total number of commits (closeHeadChunks + commitSegmentInfos)";
 
     // Aggregation Metrics
     public static final String AGGREGATION_COLLECT_LATENCY_DESC = "Latency of collect() operation per aggregation request";

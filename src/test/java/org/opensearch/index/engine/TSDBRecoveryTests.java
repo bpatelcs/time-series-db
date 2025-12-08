@@ -11,7 +11,9 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.action.index.IndexRequest;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
+import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.xcontent.MediaTypeRegistry;
 import org.opensearch.index.replication.OpenSearchIndexLevelReplicationTestCase;
@@ -54,6 +56,11 @@ public class TSDBRecoveryTests extends OpenSearchIndexLevelReplicationTestCase {
             getClass().getName(),
             new FixedExecutorBuilder(Settings.EMPTY, TSDBPlugin.MGMT_THREAD_POOL_NAME, 1, 100, "tsdb.mgmt")
         );
+
+        // Register dynamic settings that are consumed by a settings updater
+        IndexScopedSettings.DEFAULT_SCOPED_SETTINGS.registerSetting(TSDBPlugin.TSDB_ENGINE_COMMIT_INTERVAL);
+        IndexScopedSettings.DEFAULT_SCOPED_SETTINGS.registerSetting(TSDBPlugin.TSDB_ENGINE_RETENTION_FREQUENCY);
+        IndexScopedSettings.DEFAULT_SCOPED_SETTINGS.registerSetting(TSDBPlugin.TSDB_ENGINE_COMPACTION_FREQUENCY);
     }
 
     public void testIndexingDuringRecovery() throws Exception {
@@ -61,6 +68,7 @@ public class TSDBRecoveryTests extends OpenSearchIndexLevelReplicationTestCase {
             .put("index.tsdb_engine.enabled", true)
             .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
             .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0)
+            .put(TSDBPlugin.TSDB_ENGINE_COMMIT_INTERVAL.getKey(), TimeValue.timeValueSeconds(60))
             .build();
 
         ReplicationGroup shards = createGroup(0, settings, DEFAULT_INDEX_MAPPING, new TSDBEngineFactory());

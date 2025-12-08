@@ -14,6 +14,7 @@ import org.apache.lucene.index.Term;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.service.ClusterApplierService;
 import org.opensearch.common.lucene.Lucene;
+import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.xcontent.XContentType;
 import org.opensearch.core.common.bytes.BytesArray;
@@ -117,6 +118,10 @@ public class TSDBEngineTests extends EngineTestCase {
         }
         mapperService = createMapperService(DEFAULT_INDEX_MAPPING);
         engineConfig = config(engineConfig, () -> new DocumentMapperForType(mapperService.documentMapper(), null), clusterApplierService);
+
+        // Register dynamic settings on the final IndexSettings instance created by config()
+        registerDynamicSettings(engineConfig.getIndexSettings().getScopedSettings());
+
         if (!Lucene.indexExists(store.directory())) {
             store.createEmpty(engineConfig.getIndexSettings().getIndexVersionCreated().luceneVersion);
             final String translogUuid = Translog.createEmptyTranslog(
@@ -139,6 +144,16 @@ public class TSDBEngineTests extends EngineTestCase {
                 .put("index.requests.cache.enable", false)
                 .build()
         );
+    }
+
+    /**
+     * For dynamic settings that are consumed by a settings updater, register them here.
+     * @param indexScopedSettings indexScopeSettings to register against
+     */
+    private void registerDynamicSettings(IndexScopedSettings indexScopedSettings) {
+        indexScopedSettings.registerSetting(TSDBPlugin.TSDB_ENGINE_COMMIT_INTERVAL);
+        indexScopedSettings.registerSetting(TSDBPlugin.TSDB_ENGINE_COMPACTION_FREQUENCY);
+        indexScopedSettings.registerSetting(TSDBPlugin.TSDB_ENGINE_RETENTION_FREQUENCY);
     }
 
     private Engine.IndexResult publishSample(int id, String json) throws IOException {

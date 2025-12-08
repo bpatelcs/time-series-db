@@ -58,6 +58,9 @@ public class TSDBEngineMetrics {
     /** Histogram for flush operation latency */
     public Histogram flushLatency;
 
+    /** Counter for total commits */
+    public Counter commitTotal;
+
     /**
      * Initialize engine metrics with basic counters and histograms.
      *
@@ -125,6 +128,13 @@ public class TSDBEngineMetrics {
             TSDBMetricsConstants.FLUSH_LATENCY_DESC,
             TSDBMetricsConstants.UNIT_MILLISECONDS
         );
+
+        // Initialize commit counter
+        commitTotal = registry.createCounter(
+            TSDBMetricsConstants.COMMIT_TOTAL,
+            TSDBMetricsConstants.COMMIT_TOTAL_DESC,
+            TSDBMetricsConstants.UNIT_COUNT
+        );
     }
 
     /**
@@ -190,6 +200,9 @@ public class TSDBEngineMetrics {
         // Cleanup histograms
         closedChunkSize = null;
         flushLatency = null;
+
+        // Cleanup commit counter
+        commitTotal = null;
     }
 
     /**

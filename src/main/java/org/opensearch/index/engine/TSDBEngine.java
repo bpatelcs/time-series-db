@@ -22,6 +22,7 @@ import org.opensearch.ExceptionsHelper;
 import org.opensearch.common.concurrent.GatedCloseable;
 import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 import org.opensearch.common.metrics.CounterMetric;
+import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.concurrent.ReleasableLock;
 import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.common.xcontent.XContentType;
@@ -53,7 +54,9 @@ import org.opensearch.tsdb.core.index.live.LiveSeriesIndex;
 import org.opensearch.tsdb.core.mapping.Constants;
 import org.opensearch.tsdb.core.reader.TSDBDirectoryReaderReferenceManager;
 import org.opensearch.tsdb.core.retention.RetentionFactory;
+import org.opensearch.tsdb.core.utils.RateLimitedLock;
 import org.opensearch.tsdb.metrics.TSDBMetrics;
+import org.opensearch.tsdb.TSDBPlugin;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -99,8 +102,9 @@ public class TSDBEngine extends Engine {
     private final IndexWriter metadataIndexWriter;
     private final SnapshotDeletionPolicy snapshotDeletionPolicy;
 
-    private final Lock closeChunksLock = new ReentrantLock(); // control closing head chunks during ops like flushing head
+    private final RateLimitedLock closeChunksLock; // control closing head chunks during ops like flushing head
     private final Lock segmentInfosLock = new ReentrantLock(); // protect lastCommittedSegmentInfos access
+    private volatile TimeValue commitInterval; // cached commit interval setting
     private Head head;
     private Path metricsStorePath;
     private ReferenceManager<OpenSearchDirectoryReader> tsdbReaderManager;
@@ -128,6 +132,14 @@ public class TSDBEngine extends Engine {
      */
     TSDBEngine(EngineConfig engineConfig, Path path) throws IOException {
         super(engineConfig);
+
+        this.commitInterval = TSDBPlugin.TSDB_ENGINE_COMMIT_INTERVAL.get(engineConfig.getIndexSettings().getSettings());
+        engineConfig.getIndexSettings()
+            .getScopedSettings()
+            .addSettingsUpdateConsumer(TSDBPlugin.TSDB_ENGINE_COMMIT_INTERVAL, newInterval -> this.commitInterval = newInterval);
+
+        // Initialize rate-limited lock for closeHeadChunks operations
+        this.closeChunksLock = new RateLimitedLock(() -> this.commitInterval);
 
         if (engineConfig.getStore().shardPath() != null) {
             this.metricsStorePath = engineConfig.getStore().shardPath().getDataPath().resolve(METRICS_STORE_DIR);
@@ -556,6 +568,7 @@ public class TSDBEngine extends Engine {
     /**
      * Flushes head chunks by memory-mapping completed time ranges and committing segments.
      * Only performs flush if forced or if translog size exceeds threshold.
+     * Throttles expensive closeHeadChunks (index commit) operations based on commit interval.
      *
      * @param force force flush regardless of translog size
      * @param waitIfOngoing indicates whether to wait if there are ongoing flush operations
@@ -564,11 +577,12 @@ public class TSDBEngine extends Engine {
     @Override
     public void flush(boolean force, boolean waitIfOngoing) throws EngineException {
         // acquire closeChunksLock based on waitIfOngoing flag
-        if (closeChunksLock.tryLock() == false) {
+        // tryLock() respects the commit interval - it will return false if interval hasn't elapsed
+        if (!closeChunksLock.tryLock()) {
             if (waitIfOngoing) {
                 closeChunksLock.lock();
             } else {
-                logger.debug("Skipping flush request as there is already an ongoing flush.");
+                logger.debug("Skipping flush request (commit interval not elapsed or ongoing flush)");
                 return;
             }
         }
@@ -610,6 +624,7 @@ public class TSDBEngine extends Engine {
             // TODO: replace this log with a metric
             logger.debug("Setting local checkpoint of safe commit to {}", checkpoint);
             commitSegmentInfos(checkpoint);
+            TSDBMetrics.incrementCounter(TSDBMetrics.ENGINE.commitTotal, 1L);
             refreshInternal("flush", SearcherScope.INTERNAL, true);
         } catch (Exception e) {
             logger.error("Error while MMAPing head chunks and processing flush operation", e);

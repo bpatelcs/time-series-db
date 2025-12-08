@@ -42,12 +42,10 @@ public class RetentionFactory {
      */
     public static Retention create(IndexSettings indexSettings) {
         var retention = getRetentionFor(indexSettings);
-        if (indexSettings.getScopedSettings().get(TSDBPlugin.TSDB_ENGINE_RETENTION_FREQUENCY.getKey()) != null) {
-            indexSettings.getScopedSettings().addSettingsUpdateConsumer(TSDBPlugin.TSDB_ENGINE_RETENTION_FREQUENCY, newFrequency -> {
-                logger.info("Updating retention frequency to: {}", newFrequency);
-                retention.setFrequency(newFrequency.getMillis());
-            });
-        }
+        indexSettings.getScopedSettings().addSettingsUpdateConsumer(TSDBPlugin.TSDB_ENGINE_RETENTION_FREQUENCY, newFrequency -> {
+            logger.info("Updating retention frequency to: {}", newFrequency);
+            retention.setFrequency(newFrequency.getMillis());
+        });
         return retention;
     }
 
