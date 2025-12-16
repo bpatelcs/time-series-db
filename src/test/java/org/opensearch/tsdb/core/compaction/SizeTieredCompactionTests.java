@@ -35,7 +35,10 @@ import java.time.Instant;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.IntStream;
+
+import org.opensearch.tsdb.core.index.metadata.SeriesMetadataIO;
 
 public class SizeTieredCompactionTests extends OpenSearchTestCase {
     private static final long TEST_BLOCK_DURATION = Duration.ofHours(2).toMillis();
@@ -365,6 +368,117 @@ public class SizeTieredCompactionTests extends OpenSearchTestCase {
         assertEquals(3, TestUtils.getChunks(index).size());
         manager.close();
         index.close();
+    }
+
+    /**
+     * Test that compaction correctly handles live series metadata stored in separate files.
+     * This verifies the new metadata file feature is compatible with compaction.
+     */
+    public void testCompactPreservesMetadataFiles() throws IOException {
+        Path tempDir = createTempDir("testCompactPreservesMetadataFiles");
+        MetadataStore metadataStore = new InMemoryMetadataStore();
+        Duration[] ranges = IntStream.of(2, 6, 18, 54, 162, 486).mapToObj(Duration::ofHours).toArray(Duration[]::new);
+        var compaction = new SizeTieredCompaction(ranges, 300_000, Constants.Time.DEFAULT_TIME_UNIT);
+        ClosedChunkIndexManager manager = new ClosedChunkIndexManager(
+            tempDir,
+            metadataStore,
+            new NOOPRetention(),
+            compaction,
+            threadPool,
+            new ShardId("index", "uuid", 0),
+            defaultSettings
+        );
+
+        // Create multiple series to test metadata handling
+        Labels labels1 = ByteLabels.fromStrings("label1", "value1");
+        Labels labels2 = ByteLabels.fromStrings("label2", "value2");
+        MemSeries series1 = new MemSeries(100L, labels1);
+        MemSeries series2 = new MemSeries(200L, labels2);
+
+        // Create indexes with chunks from both series
+        for (int i = 0; i < 3; i++) {
+            manager.addMemChunk(series1, TestUtils.getMemChunk(5, i * TEST_BLOCK_DURATION, (i + 1) * TEST_BLOCK_DURATION - 1));
+            manager.addMemChunk(series2, TestUtils.getMemChunk(5, i * TEST_BLOCK_DURATION, (i + 1) * TEST_BLOCK_DURATION - 1));
+        }
+        manager.commitChangedIndexes(List.of(series1, series2));
+
+        var indexes = manager.getClosedChunkIndexes(Instant.ofEpochMilli(0), Instant.now());
+        assertEquals("Should have created 3 indexes", 3, indexes.size());
+
+        // Verify each source index has metadata files
+        for (ClosedChunkIndex sourceIndex : indexes) {
+            List<String> metadataFiles = SeriesMetadataIO.listMetadataFiles(sourceIndex.getDirectory());
+            assertFalse("Source index should have metadata file", metadataFiles.isEmpty());
+        }
+
+        // Verify source metadata can be read
+        Map<Long, Long> sourceMetadata = new HashMap<>();
+        for (ClosedChunkIndex sourceIndex : indexes) {
+            sourceIndex.applyLiveSeriesMetaData(sourceMetadata::put);
+        }
+        assertEquals("Should have metadata for 2 series", 2, sourceMetadata.size());
+        assertTrue("Should have metadata for series1", sourceMetadata.containsKey(100L));
+        assertTrue("Should have metadata for series2", sourceMetadata.containsKey(200L));
+
+        // Create destination index for compaction
+        var compactedMinTime = Time.toTimestamp(indexes.getFirst().getMinTime(), Constants.Time.DEFAULT_TIME_UNIT);
+        var compactedMaxTime = Time.toTimestamp(indexes.getLast().getMaxTime(), Constants.Time.DEFAULT_TIME_UNIT);
+        String dirName = String.join("_", "block", Long.toString(compactedMinTime), Long.toString(compactedMaxTime), UUIDs.base64UUID());
+        var dest = new ClosedChunkIndex(
+            tempDir.resolve("blocks").resolve(dirName),
+            new ClosedChunkIndex.Metadata("compacted", compactedMinTime, compactedMaxTime),
+            Constants.Time.DEFAULT_TIME_UNIT,
+            Settings.EMPTY
+        );
+
+        // Execute compact
+        compaction.compact(indexes, dest);
+
+        // Verify destination has metadata file
+        List<String> destMetadataFiles = SeriesMetadataIO.listMetadataFiles(dest.getDirectory());
+        assertFalse("Destination index should have metadata file after compaction", destMetadataFiles.isEmpty());
+
+        // Verify compacted metadata matches source metadata
+        Map<Long, Long> compactedMetadata = new HashMap<>();
+        dest.applyLiveSeriesMetaData(compactedMetadata::put);
+        assertEquals("Compacted index should have metadata for 2 series", 2, compactedMetadata.size());
+        assertTrue("Compacted metadata should have series1", compactedMetadata.containsKey(100L));
+        assertTrue("Compacted metadata should have series2", compactedMetadata.containsKey(200L));
+
+        // Verify timestamps are correct (should be from the last chunk for each series)
+        long expectedMaxTimestamp = (3 * TEST_BLOCK_DURATION) - 1;
+        assertEquals("Series1 max timestamp should match", expectedMaxTimestamp, compactedMetadata.get(100L).longValue());
+        assertEquals("Series2 max timestamp should match", expectedMaxTimestamp, compactedMetadata.get(200L).longValue());
+
+        // Verify chunks are all present
+        assertEquals("Compacted index should have 6 chunks (3 per series)", 6, TestUtils.getChunks(dest).size());
+
+        dest.close();
+
+        // Reopen the compacted index and verify metadata persisted correctly
+        var reopenedIndex = new ClosedChunkIndex(
+            dest.getPath(),
+            new ClosedChunkIndex.Metadata(
+                dest.getPath().getFileName().toString(),
+                Time.toTimestamp(dest.getMinTime(), Constants.Time.DEFAULT_TIME_UNIT),
+                Time.toTimestamp(dest.getMaxTime(), Constants.Time.DEFAULT_TIME_UNIT)
+            ),
+            Constants.Time.DEFAULT_TIME_UNIT,
+            Settings.EMPTY
+        );
+
+        // Verify metadata can be read from reopened index
+        Map<Long, Long> reopenedMetadata = new HashMap<>();
+        reopenedIndex.applyLiveSeriesMetaData(reopenedMetadata::put);
+        assertEquals("Reopened index should have metadata for 2 series", 2, reopenedMetadata.size());
+        assertEquals("Series1 timestamp should persist", expectedMaxTimestamp, reopenedMetadata.get(100L).longValue());
+        assertEquals("Series2 timestamp should persist", expectedMaxTimestamp, reopenedMetadata.get(200L).longValue());
+
+        // Verify chunks are still accessible after reopen
+        assertEquals("Reopened index should have 6 chunks", 6, TestUtils.getChunks(reopenedIndex).size());
+
+        reopenedIndex.close();
+        manager.close();
     }
 
     private List<ClosedChunkIndex> createIndexes(ClosedChunkIndexManager manager, MemSeries series, long[] minTimes, long[] maxTimes)

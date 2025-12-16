@@ -31,17 +31,16 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.MMapDirectory;
 import org.apache.lucene.util.BytesRef;
 import org.opensearch.ExceptionsHelper;
-import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.common.xcontent.XContentFactory;
-import org.opensearch.core.common.io.stream.BytesStreamInput;
 import org.opensearch.core.xcontent.MediaTypeRegistry;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.tsdb.TSDBPlugin;
 import org.opensearch.tsdb.core.chunk.Chunk;
 import org.opensearch.tsdb.core.head.MemChunk;
 import org.opensearch.tsdb.core.head.MemSeries;
+import org.opensearch.tsdb.core.index.metadata.SeriesMetadataManager;
 import org.opensearch.tsdb.core.mapping.LabelStorageType;
 import org.opensearch.tsdb.core.mapping.Constants;
 import org.opensearch.tsdb.core.model.Labels;
@@ -51,11 +50,9 @@ import org.opensearch.tsdb.metrics.TSDBMetrics;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,7 +64,6 @@ import java.util.stream.Stream;
  * Simple head index that stores chunks, current as one doc per chunk.
  */
 public class ClosedChunkIndex implements Closeable {
-    private static final String SERIES_METADATA_KEY = "live_series_metadata";
     private final Analyzer analyzer;
     private final Directory directory;
     private final SnapshotDeletionPolicy snapshotDeletionPolicy;
@@ -76,6 +72,7 @@ public class ClosedChunkIndex implements Closeable {
     private final Path path;
     private final TimeUnit resolution;
     private final LabelStorageType labelStorageType;
+    private final SeriesMetadataManager metadataManager;
     private IndexWriter indexWriter;
 
     /**
@@ -125,7 +122,7 @@ public class ClosedChunkIndex implements Closeable {
             iwc.setIndexSort(indexSort);
 
             indexWriter = new IndexWriter(directory, iwc);
-
+            this.metadataManager = new SeriesMetadataManager(directory, indexWriter, snapshotDeletionPolicy);
             directoryReaderManager = new ReaderManager(DirectoryReader.open(indexWriter));
             path = dir;
         } catch (IOException e) {
@@ -232,25 +229,11 @@ public class ClosedChunkIndex implements Closeable {
      * @param liveSeries the list of live series to include in the commit metadata
      */
     public void commitWithMetadata(List<MemSeries> liveSeries) {
-        Map<String, String> commitData = new HashMap<>();
-
-        try (BytesStreamOutput output = new BytesStreamOutput()) {
-            output.writeVLong(liveSeries.size());
-            for (MemSeries series : liveSeries) {
-                output.writeLong(series.getReference());
-                output.writeVLong(series.getMaxMMapTimestamp());
-            }
-            String liveSeriesMetadata = new String(Base64.getEncoder().encode(output.bytes().toBytesRef().bytes), StandardCharsets.UTF_8);
-            commitData.put(SERIES_METADATA_KEY, liveSeriesMetadata);
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to serialize live series", e);
+        Map<Long, Long> metadata = new HashMap<>();
+        for (MemSeries series : liveSeries) {
+            metadata.put(series.getReference(), series.getMaxMMapTimestamp());
         }
-
-        try {
-            commitWithMetadata(() -> commitData.entrySet().iterator());
-        } catch (Exception e) {
-            throw ExceptionsHelper.convertToRuntime(e);
-        }
+        commitWithMetadata(metadata);
     }
 
     /**
@@ -259,24 +242,10 @@ public class ClosedChunkIndex implements Closeable {
      * @param liveSeries the map of seriesRef to corresponding max mmap timestamps.
      */
     public void commitWithMetadata(Map<Long, Long> liveSeries) {
-        Map<String, String> commitData = new HashMap<>();
-
-        try (BytesStreamOutput output = new BytesStreamOutput()) {
-            output.writeVLong(liveSeries.size());
-            for (Map.Entry<Long, Long> entry : liveSeries.entrySet()) {
-                output.writeLong(entry.getKey());
-                output.writeVLong(entry.getValue());
-            }
-            String liveSeriesMetadata = new String(Base64.getEncoder().encode(output.bytes().toBytesRef().bytes), StandardCharsets.UTF_8);
-            commitData.put(SERIES_METADATA_KEY, liveSeriesMetadata);
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to serialize live series", e);
-        }
-
         try {
-            commitWithMetadata(() -> commitData.entrySet().iterator());
+            metadataManager.commitWithMetadata(liveSeries);
         } catch (IOException e) {
-            throw new RuntimeException("Failed to commit ", e);
+            throw new RuntimeException("Failed to commit with metadata", e);
         }
     }
 
@@ -286,36 +255,11 @@ public class ClosedChunkIndex implements Closeable {
      * @param consumer BiConsumer to accept seriesRef(Long) and ts(Long).
      */
     public void applyLiveSeriesMetaData(BiConsumer<Long, Long> consumer) {
-        Iterable<Map.Entry<String, String>> commitData = indexWriter.getLiveCommitData();
-        if (commitData == null) {
-            return;
-        }
-
         try {
-            for (Map.Entry<String, String> entry : commitData) {
-                if (entry.getKey().equals(SERIES_METADATA_KEY)) {
-                    String seriesMetadata = entry.getValue();
-                    byte[] bytes = Base64.getDecoder().decode(seriesMetadata);
-                    try (BytesStreamInput input = new BytesStreamInput(bytes)) {
-                        if (input.available() > 0) {
-                            long numSeries = input.readVLong();
-                            for (int i = 0; i < numSeries; i++) {
-                                long ref = input.readLong();
-                                long ts = input.readVLong();
-                                consumer.accept(ref, ts);
-                            }
-                        }
-                    }
-                }
-            }
+            metadataManager.applyMetadata(consumer);
         } catch (IOException e) {
             throw ExceptionsHelper.convertToRuntime(e);
         }
-    }
-
-    private void commitWithMetadata(Iterable<Map.Entry<String, String>> commitData) throws IOException {
-        indexWriter.setLiveCommitData(commitData, true);
-        indexWriter.commit();
     }
 
     /**
@@ -325,7 +269,7 @@ public class ClosedChunkIndex implements Closeable {
      * @throws IOException if snapshot fails
      */
     public IndexCommit snapshot() throws IOException {
-        return snapshotDeletionPolicy.snapshot();
+        return metadataManager.snapshot();
     }
 
     /**
@@ -335,8 +279,7 @@ public class ClosedChunkIndex implements Closeable {
      * @throws IOException if release fails
      */
     public void release(IndexCommit snapshot) throws IOException {
-        snapshotDeletionPolicy.release(snapshot);
-        indexWriter.deleteUnusedFiles();
+        metadataManager.release(snapshot);
     }
 
     /**
