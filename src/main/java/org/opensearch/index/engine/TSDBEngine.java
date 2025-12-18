@@ -104,16 +104,18 @@ public class TSDBEngine extends Engine {
     private final IndexWriter metadataIndexWriter;
     private final SnapshotDeletionPolicy snapshotDeletionPolicy;
 
+    // flush and commit management
+    private final Lock flushLock = new ReentrantLock(); // prevent concurrent flush operations
     private final RateLimitedLock closeChunksLock; // control closing head chunks during ops like flushing head
     private final Lock segmentInfosLock = new ReentrantLock(); // protect lastCommittedSegmentInfos access
+    private volatile SegmentInfos lastCommittedSegmentInfos;
     private volatile TimeValue commitInterval; // cached commit interval setting
+
     private Head head;
     private Path metricsStorePath;
     private ReferenceManager<OpenSearchDirectoryReader> tsdbReaderManager;
     private final MetadataStore metadataStore;
     private final MMappedChunksManager mappedChunksManager;
-
-    private volatile SegmentInfos lastCommittedSegmentInfos;
 
     /**
      * Constructs a TSDBEngine with the specified engine configuration.
@@ -573,7 +575,8 @@ public class TSDBEngine extends Engine {
 
     /**
      * Flushes head chunks by memory-mapping completed time ranges and committing segments.
-     * Only performs flush if forced or if translog size exceeds threshold.
+     * Rolls translog generation when needed (based on generation threshold).
+     * Only performs full commit if forced or if translog size exceeds flush threshold.
      * Throttles expensive closeHeadChunks (index commit) operations based on commit interval.
      *
      * @param force force flush regardless of translog size
@@ -583,69 +586,99 @@ public class TSDBEngine extends Engine {
     @Override
     public void flush(boolean force, boolean waitIfOngoing) throws EngineException {
         this.ensureOpen();
-        // acquire closeChunksLock based on waitIfOngoing flag
-        // tryLock() respects the commit interval - it will return false if interval hasn't elapsed
-        if (!closeChunksLock.tryLock()) {
-            // If force is true, waitIfOngoing must be true. Only block when force is true, to ensure translog-size triggered flush
-            // requests (force=false, waitIfOngoing=true) are properly throttled
-            if (force) {
-                closeChunksLock.lock();
-            } else {
-                logger.debug("Skipping flush request (commit interval not elapsed or ongoing flush)");
-                return;
+        try (ReleasableLock lock = readLock.acquire()) {
+            // Acquire flushLock to prevent concurrent flush operations
+            if (!flushLock.tryLock()) {
+                // If we can't get the lock right away, block if needed, otherwise return
+                if (!waitIfOngoing) {
+                    return;
+                }
+                flushLock.lock();
             }
-        }
 
-        // closeChunksLock has been acquired
-        long startNanos = System.nanoTime();
-        try {
-            // Check if translog is in recovery mode - block flush during local recovery
             try {
-                // TODO: add IT to verify flush is blocked during local recovery
-                translogManager.ensureCanFlush();
-            } catch (IllegalStateException e) {
-                logger.debug("Skipping flush - translog in local recovery: {}", e.getMessage());
-                return;
+                // Check if translog is in recovery mode - skip flush entirely during local recovery
+                try {
+                    // TODO: add IT to verify flush is blocked during local recovery
+                    translogManager.ensureCanFlush();
+                } catch (IllegalStateException e) {
+                    logger.debug("Skipping flush - translog in local recovery: {}", e.getMessage());
+                    return;
+                }
+
+                // Check if flush is needed based on translog size
+                boolean shouldPeriodicallyFlush = shouldPeriodicallyFlush();
+                if (!force && !shouldPeriodicallyFlush) {
+                    logger.debug(
+                        "Skipping commit - translog size below threshold (force={}, shouldFlush={})",
+                        force,
+                        shouldPeriodicallyFlush
+                    );
+                    return;
+                }
+
+                // Roll translog generation if needed, preventing unbounded translog growth when commits are throttled
+                if (translogManager.shouldRollTranslogGeneration()) {
+                    try {
+                        translogManager.rollTranslogGeneration();
+                    } catch (Exception e) {
+                        logger.error("Error rolling translog generation during flush", e);
+                        throw new EngineException(shardId, "Failed to roll translog generation", e);
+                    }
+                }
+
+                // Now attempt the expensive commit operation (throttled by commit interval)
+                // acquire closeChunksLock based on force flag
+                // tryLock() respects the commit interval - it will return false if interval hasn't elapsed
+                if (!closeChunksLock.tryLock()) {
+                    // If force is true, waitIfOngoing must be true. Only block when force is true, to ensure translog-size triggered flush
+                    // requests (force=false, waitIfOngoing=true) are properly throttled
+                    if (force) {
+                        closeChunksLock.lock();
+                    } else {
+                        logger.debug("Skipping commit (commit interval not elapsed or ongoing commit) - translog roll already attempted");
+                        return;
+                    }
+                }
+
+                // closeChunksLock has been acquired
+                long startNanos = System.nanoTime();
+                try {
+                    logger.debug("MMAPing head chunks");
+
+                    // Retrieve the processed local checkpoint before calling head.closeHeadChunks().
+                    // This will be used if the returned checkpoint is Long.MAX_VALUE, indicating all chunks at that time is closed.
+                    long currentProcessedCheckpoint = localCheckpointTracker.getProcessedCheckpoint();
+
+                    Head.IndexChunksResult indexChunksResult = head.closeHeadChunks(postRecoveryRefreshCompleted);
+                    long minSeqNo = indexChunksResult.minSeqNo();
+                    long checkpoint = minSeqNo == Long.MAX_VALUE ? Long.MAX_VALUE : minSeqNo - 1;
+
+                    // add already mmaped chunks to manager
+                    this.mappedChunksManager.addMMappedChunks(indexChunksResult.seriesRefToClosedChunks());
+
+                    // checkpoint is Long.MAX_VALUE if all chunks are closed. In this case, use processed checkpoint before closing the
+                    // chunks
+                    if (checkpoint == Long.MAX_VALUE) {
+                        checkpoint = currentProcessedCheckpoint;
+                    }
+
+                    translogManager.getDeletionPolicy().setLocalCheckpointOfSafeCommit(checkpoint);
+                    // TODO: replace this log with a metric
+                    logger.debug("Setting local checkpoint of safe commit to {}", checkpoint);
+                    commitSegmentInfos(checkpoint);
+                    TSDBMetrics.incrementCounter(TSDBMetrics.ENGINE.commitTotal, 1L);
+                    refreshInternal("flush", SearcherScope.INTERNAL, true);
+                } catch (Exception e) {
+                    logger.error("Error while MMAPing head chunks and processing flush operation", e);
+                } finally {
+                    long durationMs = (System.nanoTime() - startNanos) / 1_000_000L;
+                    TSDBMetrics.recordHistogram(TSDBMetrics.ENGINE.flushLatency, durationMs);
+                    closeChunksLock.unlock();
+                }
+            } finally {
+                flushLock.unlock();
             }
-
-            // Check if flush is needed based on translog size
-            boolean shouldPeriodicallyFlush = shouldPeriodicallyFlush();
-
-            if (!force && !shouldPeriodicallyFlush) {
-                logger.info("Skipping flush - translog size below threshold (force={}, shouldFlush={})", force, shouldPeriodicallyFlush);
-                return;
-            }
-
-            logger.debug("MMAPing head chunks");
-
-            // Retrieve the processed local checkpoint before calling head.closeHeadChunks().
-            // This will be used if the returned checkpoint is Long.MAX_VALUE, indicating all chunks at that time is closed.
-            long currentProcessedCheckpoint = localCheckpointTracker.getProcessedCheckpoint();
-
-            Head.IndexChunksResult indexChunksResult = head.closeHeadChunks(postRecoveryRefreshCompleted);
-            long minSeqNo = indexChunksResult.minSeqNo();
-            long checkpoint = minSeqNo == Long.MAX_VALUE ? Long.MAX_VALUE : minSeqNo - 1;
-
-            // add already mmaped chunks to manager
-            this.mappedChunksManager.addMMappedChunks(indexChunksResult.seriesRefToClosedChunks());
-
-            // checkpoint is Long.MAX_VALUE if all chunks are closed. In this case, use processed checkpoint before closing the chunks
-            if (checkpoint == Long.MAX_VALUE) {
-                checkpoint = currentProcessedCheckpoint;
-            }
-
-            translogManager.getDeletionPolicy().setLocalCheckpointOfSafeCommit(checkpoint);
-            // TODO: replace this log with a metric
-            logger.debug("Setting local checkpoint of safe commit to {}", checkpoint);
-            commitSegmentInfos(checkpoint);
-            TSDBMetrics.incrementCounter(TSDBMetrics.ENGINE.commitTotal, 1L);
-            refreshInternal("flush", SearcherScope.INTERNAL, true);
-        } catch (Exception e) {
-            logger.error("Error while MMAPing head chunks and processing flush operation", e);
-        } finally {
-            long durationMs = (System.nanoTime() - startNanos) / 1_000_000L;
-            TSDBMetrics.recordHistogram(TSDBMetrics.ENGINE.flushLatency, durationMs);
-            closeChunksLock.unlock();
         }
     }
 

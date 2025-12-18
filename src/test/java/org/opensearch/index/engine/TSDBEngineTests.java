@@ -54,6 +54,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -62,6 +64,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.opensearch.tsdb.core.mapping.Constants.Mapping.DEFAULT_INDEX_MAPPING;
 import static org.opensearch.tsdb.utils.TSDBTestUtils.createSampleJson;
+import static org.opensearch.tsdb.utils.TSDBTestUtils.countSamples;
 
 public class TSDBEngineTests extends EngineTestCase {
 
@@ -975,6 +978,190 @@ public class TSDBEngineTests extends EngineTestCase {
     }
 
     /**
+     * Test that concurrent indexing and flush operations result in a consistent state
+     */
+    public void testConcurrentIndexingAndFlush() throws Exception {
+        final int numIndexingThreads = 5;
+        final int numFlushThreads = 5;
+        final int samplesPerThread = 100;
+        final CountDownLatch allThreadsReady = new CountDownLatch(numIndexingThreads + numFlushThreads);
+        final CountDownLatch startOperations = new CountDownLatch(1);
+        final AtomicLong successfulIndexes = new AtomicLong(0);
+        final AtomicLong completedFlushes = new AtomicLong(0);
+
+        long chunkDurationMs = TSDBPlugin.TSDB_ENGINE_CHUNK_DURATION.get(indexSettings.getSettings()).millis();
+
+        // Shared timestamp and barrier to coordinate threads
+        final AtomicLong currentTimestamp = new AtomicLong(1000L);
+        final CyclicBarrier roundBarrier = new CyclicBarrier(numIndexingThreads, () -> {
+            // After all threads finish a round, advance timestamp significantly to ensure some new chunks are created
+            currentTimestamp.addAndGet(chunkDurationMs / 10);
+        });
+
+        // Create indexing threads
+        Thread[] indexingThreads = new Thread[numIndexingThreads];
+        for (int t = 0; t < numIndexingThreads; t++) {
+            final int threadId = t;
+            indexingThreads[t] = new Thread(() -> {
+                try {
+                    allThreadsReady.countDown();
+                    startOperations.await();
+
+                    // Index samples in synchronized rounds
+                    for (int i = 0; i < samplesPerThread; i++) {
+                        int sampleId = threadId * samplesPerThread + i;
+                        // All threads use similar timestamps (with small offset per thread)
+                        long timestamp = currentTimestamp.get() + (threadId * 10L);
+                        String sample = createSampleJson(series1, timestamp, 10.0 + sampleId);
+                        Engine.IndexResult result = publishSample(sampleId, sample);
+                        if (result.isCreated()) {
+                            successfulIndexes.incrementAndGet();
+                        }
+
+                        // Wait for all threads to complete this round before advancing timestamp
+                        roundBarrier.await();
+                    }
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+        }
+
+        // Create multiple flush threads to run in parallel
+        Thread[] flushThreads = new Thread[numFlushThreads];
+        for (int t = 0; t < numFlushThreads; t++) {
+            flushThreads[t] = new Thread(() -> {
+                try {
+                    allThreadsReady.countDown();
+                    startOperations.await();
+
+                    metricsEngine.flush(randomBoolean(), randomBoolean());
+                    completedFlushes.incrementAndGet();
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+        }
+
+        for (Thread thread : indexingThreads) {
+            thread.start();
+        }
+        for (Thread thread : flushThreads) {
+            thread.start();
+        }
+
+        allThreadsReady.await();
+        startOperations.countDown();
+
+        for (Thread thread : indexingThreads) {
+            thread.join(10000);
+        }
+        for (Thread thread : flushThreads) {
+            thread.join(10000);
+        }
+
+        assertEquals("All index operations should succeed", numIndexingThreads * samplesPerThread, successfulIndexes.get());
+        assertEquals("All flush operations should complete", numFlushThreads, completedFlushes.get());
+
+        metricsEngine.refresh("test");
+        assertEquals(
+            "Should have indexed all samples",
+            numIndexingThreads * samplesPerThread,
+            metricsEngine.getProcessedLocalCheckpoint() + 1
+        );
+
+        // Verify all samples are queryable from both head and closed chunks
+        long totalSamples = countSamples(metricsEngine, metricsEngine.getHead());
+        assertEquals("All samples should be queryable", numIndexingThreads * samplesPerThread, totalSamples);
+    }
+
+    /**
+     * Test that translog generation is rolled during flush when generation threshold is exceeded,
+     * even when commit is throttled by commit_interval.
+     */
+    public void testTranslogRollDuringFlush() throws Exception {
+        // Close existing engine and create new one with settings to control translog rolling
+        metricsEngine.close();
+        engineStore.close();
+
+        IndexSettings settingsWithTranslogConfig = IndexSettingsModule.newIndexSettings(
+            "index",
+            Settings.builder()
+                .put("index.tsdb_engine.enabled", true)
+                .put("index.queries.cache.enabled", false)
+                .put("index.requests.cache.enable", false)
+                .put("index.translog.generation_threshold_size", "1kb")  // Low threshold to trigger roll
+                .put("index.tsdb_engine.commit_interval", "10s")  // Long interval to throttle commits
+                .build()
+        );
+
+        // Reset engineConfig and rebuild engine
+        engineConfig = null;
+        final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
+        engineStore = createStore(settingsWithTranslogConfig, newDirectory());
+        metricsEngine = buildTSDBEngine(globalCheckpoint, engineStore, settingsWithTranslogConfig, clusterApplierService);
+        metricsEngine.translogManager()
+            .recoverFromTranslog(this.translogHandler, metricsEngine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
+
+        // Index enough data to exceed generation threshold
+        for (int i = 0; i < 50; i++) {
+            publishSample(i, createSampleJson(series1, 1000L + (i * 100L), 10.0 + i));
+        }
+
+        // Get initial translog generation
+        long generationBeforeFlush = metricsEngine.translogManager().getTranslogGeneration().translogFileGeneration;
+
+        // Force a flush - even if commit is throttled, translog should still roll if needed
+        metricsEngine.flush(true, true);
+
+        // Verify translog was rolled (generation should have increased)
+        long generationAfterFlush = metricsEngine.translogManager().getTranslogGeneration().translogFileGeneration;
+        assertTrue("Translog generation should increase after flush when threshold exceeded", generationAfterFlush > generationBeforeFlush);
+    }
+
+    /**
+     * Test that translog generation is NOT rolled during flush when under the generation threshold.
+     */
+    public void testTranslogDoesNotRollDuringFlushWhenUnderThreshold() throws Exception {
+        // Close existing engine and create new one with settings to control translog rolling
+        metricsEngine.close();
+        engineStore.close();
+
+        IndexSettings settingsWithTranslogConfig = IndexSettingsModule.newIndexSettings(
+            "index",
+            Settings.builder()
+                .put("index.tsdb_engine.enabled", true)
+                .put("index.queries.cache.enabled", false)
+                .put("index.requests.cache.enable", false)
+                .put("index.translog.generation_threshold_size", "10mb")  // High threshold to prevent roll
+                .build()
+        );
+
+        // Reset engineConfig and rebuild engine
+        engineConfig = null;
+        final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
+        engineStore = createStore(settingsWithTranslogConfig, newDirectory());
+        metricsEngine = buildTSDBEngine(globalCheckpoint, engineStore, settingsWithTranslogConfig, clusterApplierService);
+        metricsEngine.translogManager()
+            .recoverFromTranslog(this.translogHandler, metricsEngine.getProcessedLocalCheckpoint(), Long.MAX_VALUE);
+
+        // Index a small amount of data that won't exceed generation threshold
+        for (int i = 0; i < 5; i++) {
+            publishSample(i, createSampleJson(series1, 1000L + (i * 100L), 10.0 + i));
+        }
+
+        // Get initial translog generation
+        long generationBeforeFlush = metricsEngine.translogManager().getTranslogGeneration().translogFileGeneration;
+
+        // Force a flush - translog should NOT roll since we're under threshold
+        metricsEngine.flush(true, true);
+
+        // Verify translog was NOT rolled (generation should remain the same)
+        long generationAfterFlush = metricsEngine.translogManager().getTranslogGeneration().translogFileGeneration;
+        assertEquals("Translog generation should not change when under threshold", generationBeforeFlush, generationAfterFlush);
+    }
+
+    /**
      * Test that post_recovery refresh enables empty series dropping in flush.
      */
     public void testPostRecoveryRefreshEnablesSeriesDropping() throws Exception {
@@ -1310,7 +1497,7 @@ public class TSDBEngineTests extends EngineTestCase {
         metricsEngine.flush(true, true);
 
         OpenSearchDirectoryReader readerV3 = metricsEngine.getReferenceManager(Engine.SearcherScope.INTERNAL).acquire(); // A union B union
-                                                                                                                         // C
+        // C
 
         assertEquals(initialVersion + 2, readerV3.getVersion());
         Map<Long, Set<MemChunk>> allChunksAfterV2Refresh = metricsEngine.getMMappedChunksManager().getAllMMappedChunks();
@@ -1321,7 +1508,7 @@ public class TSDBEngineTests extends EngineTestCase {
         expectedChunks.get(testSeries2.stableHash()).addAll(series2ChunksC);
 
         assertEquals(expectedChunks, allChunksAfterV2Refresh);// series1:3chunks series2:2chunk
-                                                              // series3:1chunk
+        // series3:1chunk
 
         // 5. Fourth round: Create more chunks (set D)
         publishSample(9, createSampleJson(testSeries3, 8000L + chunkRange * 3, 800.0));
@@ -1331,7 +1518,7 @@ public class TSDBEngineTests extends EngineTestCase {
         metricsEngine.getHead().updateMaxSeenTimestamp(9000L + oooCutoffWindow + chunkRange * 4);
         metricsEngine.flush(true, true);
         OpenSearchDirectoryReader readerV4 = metricsEngine.getReferenceManager(Engine.SearcherScope.INTERNAL).acquire(); // A union B union
-                                                                                                                         // C union D
+        // C union D
         assertEquals(initialVersion + 3, readerV4.getVersion());
         Map<Long, Set<MemChunk>> allChunksAfterV4Refresh = metricsEngine.getMMappedChunksManager().getAllMMappedChunks();
 
@@ -1381,6 +1568,5 @@ public class TSDBEngineTests extends EngineTestCase {
 
         // note : the last reader will have a refCount of 2 until new reader is created during refresh(). so we cannot trigger doClose()
         // call which will trigger dropping of closed series here.
-
     }
 }

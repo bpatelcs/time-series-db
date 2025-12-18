@@ -27,12 +27,16 @@ import org.opensearch.tsdb.query.aggregator.TimeSeries;
 import org.opensearch.tsdb.query.aggregator.TimeSeriesUnfoldAggregationBuilder;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
+import java.util.stream.Stream;
 
 import static org.opensearch.test.hamcrest.OpenSearchAssertions.assertHitCount;
 import static org.opensearch.test.hamcrest.OpenSearchAssertions.assertSearchResponse;
@@ -396,4 +400,96 @@ public class TSDBEngineSingleNodeTests extends OpenSearchSingleNodeTestCase {
         assertEquals("Should have exactly 2 samples after recovery", 2, sampleCountAfterRecovery);
     }
 
+    /**
+     * Integration test to verify translog generations are rolled periodically.
+     * This test ensures the fix for translog rolling issue works end-to-end:
+     * - TSDBEngine.flush() rolls translog when shouldRollTranslog() returns true
+     * - Translog rolling is decoupled from expensive commit operations
+     * - Translog generations increase over time even when commits are throttled
+     */
+    public void testTranslogGenerationsRollPeriodically() throws Exception {
+        // Create index with small translog threshold to trigger rolling
+        client().admin()
+            .indices()
+            .prepareCreate(TEST_INDEX_NAME)
+            .setSettings(
+                Settings.builder()
+                    .put("index.tsdb_engine.enabled", true)
+                    .put("index.queries.cache.enabled", false)
+                    .put("index.requests.cache.enable", false)
+                    .put("index.tsdb_engine.commit_interval", "5m") // Commits every 5m (throttled)
+                    .put("index.translog.flush_threshold_size", "56b") // Small flush threshold to ensure shouldPeriodicallyFlush() is true
+                    .put("index.translog.generation_threshold_size", "100b") // Small threshold to ensure shouldRollTranslog() is true
+                    .put("index.translog.sync_interval", "1s") // Sync translog frequently
+                    .put("index.refresh_interval", "1s")
+                    .build()
+            )
+            .setMapping(DEFAULT_INDEX_MAPPING)
+            .get();
+
+        ensureGreen(TEST_INDEX_NAME);
+
+        // Get translog directory and check initial generation files
+        var indexService = getInstanceFromNode(org.opensearch.indices.IndicesService.class).indexServiceSafe(resolveIndex(TEST_INDEX_NAME));
+        var shard = indexService.getShard(0);
+        var translogPath = shard.shardPath().resolveTranslog();
+
+        long initialMaxGeneration = getMaxTranslogGeneration(translogPath);
+        logger.info("Initial max translog generation: {}", initialMaxGeneration);
+
+        // Index data in batches to exceed translog threshold multiple times
+        // Add periodic sleeps to allow afterWriteAction to run and roll translog
+        for (int batch = 0; batch < 30; batch++) {
+            BulkRequest bulkRequest = new BulkRequest();
+            for (int i = 0; i < 20; i++) {
+                int id = batch * 20 + i;
+                String sample = createSampleJson("__name__ metric host server" + id, 1000L + id, 10.0 + id);
+                bulkRequest.add(new IndexRequest(TEST_INDEX_NAME).id(String.valueOf(id)).source(sample, XContentType.JSON));
+            }
+            BulkResponse bulkResponse = client().bulk(bulkRequest).get();
+            assertFalse("Bulk indexing should succeed", bulkResponse.hasFailures());
+
+        }
+
+        // Force a flush to ensure translog is rolled and trimmed
+        client().admin().indices().prepareFlush(TEST_INDEX_NAME).get();
+
+        // Check translog files on disk
+        long finalMaxGeneration = getMaxTranslogGeneration(translogPath);
+        logger.info("Final max translog generation: {}", finalMaxGeneration);
+
+        // Verify translog generations increased (ensure it rolled at least 20x; it will roll 30x, or once per batch, but is async)
+        assertTrue(
+            String.format(
+                Locale.ROOT,
+                "Translog should have rolled many times (initial gen: %d, final gen: %d)",
+                initialMaxGeneration,
+                finalMaxGeneration
+            ),
+            finalMaxGeneration - initialMaxGeneration > 20
+        );
+    }
+
+    /**
+     * Get the maximum translog generation number from translog files on disk.
+     */
+    private long getMaxTranslogGeneration(Path translogPath) throws IOException {
+        long maxGeneration = -1;
+        try (Stream<Path> files = Files.list(translogPath)) {
+            for (Path file : (Iterable<Path>) files::iterator) {
+                String fileName = file.getFileName().toString();
+                // Translog files are named like "translog-{generation}.tlog" or "translog-{generation}.ckp"
+                if (fileName.startsWith("translog-") && (fileName.endsWith(".tlog") || fileName.endsWith(".ckp"))) {
+                    String generationStr = fileName.substring("translog-".length(), fileName.lastIndexOf('.'));
+                    try {
+                        long generation = Long.parseLong(generationStr);
+                        maxGeneration = Math.max(maxGeneration, generation);
+                    } catch (NumberFormatException e) {
+                        // Skip files that don't match expected pattern
+                    }
+                }
+            }
+        }
+        return maxGeneration;
+    }
 }
