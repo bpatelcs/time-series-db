@@ -16,6 +16,7 @@ import org.opensearch.tsdb.core.model.FloatSample;
 import org.opensearch.tsdb.core.model.Labels;
 import org.opensearch.tsdb.core.model.Sample;
 import org.opensearch.tsdb.query.aggregator.TimeSeries;
+import org.opensearch.tsdb.query.aggregator.TimeSeriesNormalizer;
 import org.opensearch.tsdb.query.aggregator.TimeSeriesProvider;
 import org.opensearch.tsdb.query.stage.UnaryPipelineStage;
 
@@ -70,14 +71,14 @@ public abstract class AbstractGroupingStage implements UnaryPipelineStage {
     }
 
     /**
-     * Process a list of time series with sample materialization control.
-     * This method allows controlling whether sample materialization should be applied.
+     * Process a list of time series with coordination control.
+     * This method allows controlling normalization and materialization for coordination aggregator.
      *
      * @param input The input time series to process
-     * @param materialize Whether to apply sample materialization (convert to final output format)
+     * @param isCoord Whether this is called from coordination aggregator (enables normalization and materialization)
      * @return The processed time series
      */
-    public List<TimeSeries> process(List<TimeSeries> input, boolean materialize) {
+    public List<TimeSeries> process(List<TimeSeries> input, boolean isCoord) {
         if (input == null) {
             throw new NullPointerException(getName() + " stage received null input");
         }
@@ -88,18 +89,23 @@ public abstract class AbstractGroupingStage implements UnaryPipelineStage {
         List<TimeSeries> result;
         if (groupByLabels.isEmpty()) {
             // No label grouping: treat all time series as one group
-            TimeSeries processedSeries = processGroup(input, null);
+            // Normalize all series together if called from coordination aggregator
+            List<TimeSeries> normalizedInput = isCoord ? normalizeInputSeries(input) : input;
+            TimeSeries processedSeries = processGroup(normalizedInput, null);
 
-            // For no-label grouping, we don't add any labels to the result
-            result = new ArrayList<>();
-            result.add(processedSeries);
+            // Apply sample materialization if called from coordination aggregator
+            if (isCoord && needsMaterialization()) {
+                processedSeries = materializeSamples(processedSeries);
+            }
+
+            return List.of(processedSeries);
         } else {
             // Label grouping: group by specified labels and aggregate within each group
-            result = processWithLabelGrouping(input);
+            result = processWithLabelGrouping(input, isCoord);
         }
 
-        // Apply sample materialization if requested
-        if (materialize && needsMaterialization()) {
+        // Apply sample materialization if called from coordination aggregator
+        if (isCoord && needsMaterialization()) {
             for (int i = 0; i < result.size(); i++) {
                 result.set(i, materializeSamples(result.get(i)));
             }
@@ -111,9 +117,10 @@ public abstract class AbstractGroupingStage implements UnaryPipelineStage {
     /**
     * Process time series with label grouping.
     * @param input List of time series to process
+    * @param isCoord Whether this is called from coordination aggregator (enables normalization per group)
     * @return List of aggregated time series grouped by labels
     */
-    protected List<TimeSeries> processWithLabelGrouping(List<TimeSeries> input) {
+    protected List<TimeSeries> processWithLabelGrouping(List<TimeSeries> input, boolean isCoord) {
         // Group by ByteLabels for proper equality and hashing
         Map<ByteLabels, List<TimeSeries>> labelGroupToSeries = new HashMap<>();
 
@@ -139,8 +146,11 @@ public abstract class AbstractGroupingStage implements UnaryPipelineStage {
             ByteLabels groupLabels = entry.getKey();
             List<TimeSeries> groupSeries = entry.getValue();
 
+            // Normalize each group separately if called from coordination aggregator
+            List<TimeSeries> normalizedGroupSeries = isCoord ? normalizeInputSeries(groupSeries) : groupSeries;
+
             // Process this group using the common method
-            TimeSeries processedSeries = processGroup(groupSeries, groupLabels);
+            TimeSeries processedSeries = processGroup(normalizedGroupSeries, groupLabels);
             result.add(processedSeries);
         }
 
@@ -213,6 +223,25 @@ public abstract class AbstractGroupingStage implements UnaryPipelineStage {
         }
 
         return stageFactory.apply(groupByLabels);
+    }
+
+    /**
+     * Normalize input time series using TYPE_AWARE consolidation and MAX step size strategy.
+     * This ensures all series are aligned to the same time grid before aggregation.
+     *
+     * @param input List of time series to normalize
+     * @return List of normalized time series with aligned timestamps and step sizes
+     */
+    protected List<TimeSeries> normalizeInputSeries(List<TimeSeries> input) {
+        if (input == null || input.isEmpty() || input.size() == 1) {
+            // No normalization needed for empty or single series
+            return input;
+        }
+        return TimeSeriesNormalizer.normalize(
+            input,
+            TimeSeriesNormalizer.StepSizeStrategy.MAX,
+            TimeSeriesNormalizer.ConsolidationStrategy.TYPE_AWARE
+        );
     }
 
     /**

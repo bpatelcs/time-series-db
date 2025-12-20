@@ -23,26 +23,150 @@ import java.util.List;
  *
  * <h2>Normalization Process:</h2>
  * <ol>
- *   <li>Calculate LCM (Least Common Multiple) of all step sizes for maximum precision</li>
+ *   <li>Calculate LCM (Least Common Multiple) and MAX of all step sizes</li>
+ *   <li>Select common step size based on strategy (LCM or MAX)</li>
  *   <li>Find the union of all time ranges (min start, max end)</li>
- *   <li>Adjust end time to align with LCM step boundaries</li>
- *   <li>Resample each series to the normalized time buckets using consolidation</li>
+ *   <li>Adjust end time to align with common step boundaries</li>
+ *   <li>Resample each series to the normalized time buckets using configurable consolidation strategy</li>
  * </ol>
+ *
+ * <h2>Consolidation Strategy:</h2>
+ * <ul>
+ *   <li><b>AVG, SUM, MAX, MIN, LAST:</b> Always uses the specified consolidation function for all series, regardless of type</li>
+ *   <li><b>TYPE_AWARE:</b> Automatically uses SUM for counter-type series (type="counter" label),
+ *       otherwise uses AVG</li>
+ * </ul>
+ *
+ * <h2>Step Size Selection Strategy:</h2>
+ * <ul>
+ *   <li><b>LCM:</b> Uses the Least Common Multiple of all step sizes. Provides maximum precision by ensuring
+ *       all original step boundaries align with the normalized grid.</li>
+ *   <li><b>MAX:</b> Uses the maximum step size among all series. Provides coarser resolution but may be
+ *       more efficient and preserve original data points better for some use cases.</li>
+ * </ul>
  *
  * <h2>Example:</h2>
  * <pre>
  * Series A: 10-second steps [100, 120, 140] at [0s, 10s, 20s]
  * Series B: 15-second steps [50, 75] at [0s, 15s]
  *
- * After normalize with AVG:
+ * After normalize with AVG and LCM strategy:
  * LCM(10s, 15s) = 30s
  * Series A: [120] at [0s] (avg of 100, 120, 140)
  * Series B: [62.5] at [0s] (avg of 50, 75)
  *
- * Now they can be operated on: divide(A, B) = 120 / 62.5 = 1.92
+ * After normalize with AVG and MAX strategy:
+ * MAX(10s, 15s) = 15s
+ * Series A: [110] at [0s] (avg of 100, 120), [140] at [15s]
+ * Series B: [50] at [0s], [75] at [15s]
+ *
+ * Now they can be operated on: divide(A, B) = 120 / 62.5 = 1.92 (LCM) or 110/50 = 2.2, 140/75 = 1.87 (MAX)
  * </pre>
  */
 public final class TimeSeriesNormalizer {
+
+    /**
+     * Strategy for selecting the common step size when normalizing multiple time series.
+     */
+    public enum StepSizeStrategy {
+        /**
+         * Use the Least Common Multiple (LCM) of all step sizes.
+         * This provides maximum precision by ensuring all original step boundaries align.
+         */
+        LCM,
+
+        /**
+         * Use the maximum step size among all series.
+         * This provides coarser resolution but may be more efficient and preserve original data points better.
+         */
+        MAX
+    }
+
+    /**
+     * Consolidation strategy for normalizing time series.
+     * Can be either a specific consolidation function (AVG, SUM, MAX, MIN, LAST) or TYPE_AWARE.
+     */
+    public enum ConsolidationStrategy {
+        /**
+         * Use average (mean) of all values in each bucket.
+         */
+        AVG {
+            @Override
+            public ConsolidationFunction getFunction() {
+                return ConsolidationFunction.AVG;
+            }
+        },
+
+        /**
+         * Use sum of all values in each bucket.
+         */
+        SUM {
+            @Override
+            public ConsolidationFunction getFunction() {
+                return ConsolidationFunction.SUM;
+            }
+        },
+
+        /**
+         * Use maximum value in each bucket.
+         */
+        MAX {
+            @Override
+            public ConsolidationFunction getFunction() {
+                return ConsolidationFunction.MAX;
+            }
+        },
+
+        /**
+         * Use minimum value in each bucket.
+         */
+        MIN {
+            @Override
+            public ConsolidationFunction getFunction() {
+                return ConsolidationFunction.MIN;
+            }
+        },
+
+        /**
+         * Use last (most recent) value in each bucket.
+         */
+        LAST {
+            @Override
+            public ConsolidationFunction getFunction() {
+                return ConsolidationFunction.LAST;
+            }
+        },
+
+        /**
+         * Use type-aware consolidation: automatically use SUM for counter-type series
+         * (series with type="counter" label), and use AVG for others.
+         * This is useful when mixing counter and gauge metrics in the same normalization operation.
+         */
+        TYPE_AWARE {
+            @Override
+            public ConsolidationFunction getFunction() {
+                // Default function for non-counter types when using TYPE_AWARE
+                return ConsolidationFunction.AVG;
+            }
+        };
+
+        /**
+         * Get the consolidation function for this strategy.
+         * For TYPE_AWARE, this returns the default function used for non-counter types.
+         *
+         * @return The consolidation function
+         */
+        public abstract ConsolidationFunction getFunction();
+
+        /**
+         * Check if this strategy is type-aware.
+         *
+         * @return true if TYPE_AWARE, false otherwise
+         */
+        public boolean isTypeAware() {
+            return this == TYPE_AWARE;
+        }
+    }
 
     private TimeSeriesNormalizer() {
         // Utility class - no instantiation
@@ -53,25 +177,35 @@ public final class TimeSeriesNormalizer {
      *
      * <p>This method aligns time series with potentially different step sizes and time ranges by:
      * <ol>
-     *   <li>Calculating the LCM (Least Common Multiple) of all step sizes for maximum precision</li>
+     *   <li>Calculating the LCM (Least Common Multiple) and MAX of all step sizes</li>
+     *   <li>Selecting the common step size based on the specified strategy (LCM or MAX)</li>
      *   <li>Finding the union of all time ranges (min start, max end)</li>
-     *   <li>Adjusting the end time to be divisible by the LCM step size</li>
-     *   <li>Resampling each series to the normalized time buckets using the specified consolidation function</li>
+     *   <li>Adjusting the end time to be divisible by the common step size</li>
+     *   <li>Resampling each series to the normalized time buckets using type-aware consolidation</li>
      * </ol>
      *
-     * <p>The consolidation function determines how values are aggregated when resampling:
+     * <p>The consolidation strategy determines how values are aggregated when resampling:
      * <ul>
-     *   <li>AVG (default): Average of values in each bucket</li>
-     *   <li>SUM: Sum of values in each bucket</li>
-     *   <li>MAX: Maximum value in each bucket</li>
-     *   <li>MIN: Minimum value in each bucket</li>
-     *   <li>LAST: Last (most recent) value in each bucket</li>
+     *   <li>AVG, SUM, MAX, MIN, LAST: Always uses the specified consolidation function for all series</li>
+     *   <li>TYPE_AWARE: Uses SUM for counter-type series (series with type="counter" label),
+     *       otherwise uses AVG</li>
      * </ul>
      *
      * <p><b>Usage Example:</b></p>
      * <pre>{@code
      * List<TimeSeries> series = Arrays.asList(seriesA, seriesB);
-     * List<TimeSeries> normalized = TimeSeriesNormalizer.normalize(series, ConsolidationFunction.AVG);
+     * List<TimeSeries> normalized = TimeSeriesNormalizer.normalize(
+     *     series,
+     *     StepSizeStrategy.LCM,
+     *     ConsolidationStrategy.TYPE_AWARE
+     * );
+     *
+     * // Or use a fixed function:
+     * List<TimeSeries> normalized2 = TimeSeriesNormalizer.normalize(
+     *     series,
+     *     StepSizeStrategy.LCM,
+     *     ConsolidationStrategy.AVG
+     * );
      *
      * // Now all series have the same step size and time range
      * TimeSeries normalizedA = normalized.get(0);
@@ -79,11 +213,16 @@ public final class TimeSeriesNormalizer {
      * }</pre>
      *
      * @param seriesList List of time series to normalize (empty list returns empty list)
-     * @param consolidationFunc The consolidation function to use for resampling (default: AVG)
+     * @param stepSizeStrategy The strategy for selecting the common step size (LCM or MAX)
+     * @param consolidationStrategy The consolidation strategy (AVG, SUM, MAX, MIN, LAST, or TYPE_AWARE)
      * @return List of normalized time series with common bucket alignment
      * @throws IllegalArgumentException if seriesList is null or contains null elements
      */
-    public static List<TimeSeries> normalize(List<TimeSeries> seriesList, ConsolidationFunction consolidationFunc) {
+    public static List<TimeSeries> normalize(
+        List<TimeSeries> seriesList,
+        StepSizeStrategy stepSizeStrategy,
+        ConsolidationStrategy consolidationStrategy
+    ) {
         if (seriesList == null) {
             throw new IllegalArgumentException("Cannot normalize null series list");
         }
@@ -98,14 +237,19 @@ public final class TimeSeriesNormalizer {
             return seriesList;
         }
 
-        // Calculate LCM of all step sizes and find time range union
+        // Calculate LCM and MAX of all step sizes, and find time range union
         long lcmStep = seriesList.get(0).getStep();
+        long maxStep = seriesList.get(0).getStep();
         long minStart = seriesList.get(0).getMinTimestamp();
         long maxEnd = seriesList.get(0).getMaxTimestamp();
 
         for (int i = 1; i < seriesList.size(); i++) {
             TimeSeries series = seriesList.get(i);
-            lcmStep = lcm(lcmStep, series.getStep());
+            long step = series.getStep();
+            lcmStep = lcm(lcmStep, step);
+            if (step > maxStep) {
+                maxStep = step;
+            }
 
             if (series.getMinTimestamp() < minStart) {
                 minStart = series.getMinTimestamp();
@@ -115,9 +259,12 @@ public final class TimeSeriesNormalizer {
             }
         }
 
-        // Adjust end time to be divisible by LCM step
+        // Select common step size based on strategy
+        long commonStep = (stepSizeStrategy == StepSizeStrategy.MAX) ? maxStep : lcmStep;
+
+        // Adjust end time to be divisible by common step
         long range = maxEnd - minStart;
-        long remainder = range % lcmStep;
+        long remainder = range % commonStep;
         if (remainder != 0) {
             maxEnd = maxEnd - remainder;
         }
@@ -126,13 +273,16 @@ public final class TimeSeriesNormalizer {
         List<TimeSeries> normalizedSeries = new ArrayList<>(seriesList.size());
         for (TimeSeries series : seriesList) {
             // Check if already aligned
-            if (series.getMinTimestamp() == minStart && series.getMaxTimestamp() == maxEnd && series.getStep() == lcmStep) {
+            if (series.getMinTimestamp() == minStart && series.getMaxTimestamp() == maxEnd && series.getStep() == commonStep) {
                 normalizedSeries.add(series);
                 continue;
             }
 
+            // Determine consolidation function based on strategy
+            ConsolidationFunction seriesConsolidationFunc = getConsolidationFunctionForSeries(series, consolidationStrategy);
+
             // Resample to normalized time buckets
-            TimeSeries resampled = resampleSeries(series, minStart, maxEnd, lcmStep, consolidationFunc);
+            TimeSeries resampled = resampleSeries(series, minStart, maxEnd, commonStep, seriesConsolidationFunc);
             normalizedSeries.add(resampled);
         }
 
@@ -140,13 +290,24 @@ public final class TimeSeriesNormalizer {
     }
 
     /**
-     * Convenience method to normalize with default consolidation function.
+     * Normalizes multiple time series using LCM step size strategy and TYPE_AWARE consolidation strategy.
+     *
+     * @param seriesList List of time series to normalize
+     * @param consolidationStrategy The consolidation strategy (AVG, SUM, MAX, MIN, LAST, or TYPE_AWARE)
+     * @return List of normalized time series with common bucket alignment
+     */
+    public static List<TimeSeries> normalize(List<TimeSeries> seriesList, ConsolidationStrategy consolidationStrategy) {
+        return normalize(seriesList, StepSizeStrategy.LCM, consolidationStrategy);
+    }
+
+    /**
+     * Convenience method to normalize with LCM step size strategy and TYPE_AWARE consolidation strategy.
      *
      * @param seriesList List of time series to normalize
      * @return List of normalized time series with common bucket alignment
      */
     public static List<TimeSeries> normalize(List<TimeSeries> seriesList) {
-        return normalize(seriesList, ConsolidationFunction.getDefault());
+        return normalize(seriesList, StepSizeStrategy.LCM, ConsolidationStrategy.TYPE_AWARE);
     }
 
     /**
@@ -267,6 +428,40 @@ public final class TimeSeriesNormalizer {
             a = temp;
         }
         return a;
+    }
+
+    /**
+     * Determines the appropriate consolidation function for a time series based on the consolidation strategy.
+     *
+     * <p>With TYPE_AWARE strategy:
+     * <ul>
+     *   <li>If the series has a "type" label with value "counter" or "counts" (case-insensitive), uses SUM</li>
+     *   <li>Otherwise uses AVG</li>
+     * </ul>
+     *
+     * <p>With other strategies (AVG, SUM, MAX, MIN, LAST):
+     * <ul>
+     *   <li>Always uses the specified consolidation function regardless of series type</li>
+     * </ul>
+     *
+     * @param series The time series to check
+     * @param strategy The consolidation strategy
+     * @return SUM if TYPE_AWARE and series is counter/counts type, otherwise the function from the strategy
+     */
+    private static ConsolidationFunction getConsolidationFunctionForSeries(TimeSeries series, ConsolidationStrategy strategy) {
+        if (strategy.isTypeAware()) {
+            if (series.getLabels() != null && series.getLabels().has("type")) {
+                String typeValue = series.getLabels().get("type");
+                // Check for both "counter" and "counts" (case-insensitive)
+                if ("counter".equalsIgnoreCase(typeValue) || "counts".equalsIgnoreCase(typeValue)) {
+                    return ConsolidationFunction.SUM;
+                }
+            }
+            // For TYPE_AWARE, use AVG for non-counter types
+            return ConsolidationFunction.AVG;
+        }
+        // For fixed strategies, use the function from the strategy
+        return strategy.getFunction();
     }
 
 }

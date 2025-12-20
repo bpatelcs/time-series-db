@@ -9,7 +9,6 @@ package org.opensearch.tsdb.lang.m3.stage;
 
 import org.opensearch.tsdb.core.model.Labels;
 import org.opensearch.tsdb.core.model.Sample;
-import org.opensearch.tsdb.query.aggregator.ConsolidationFunction;
 import org.opensearch.tsdb.query.aggregator.TimeSeries;
 import org.opensearch.tsdb.query.aggregator.TimeSeriesNormalizer;
 import org.opensearch.tsdb.query.stage.BinaryPipelineStage;
@@ -43,12 +42,12 @@ public abstract class AbstractBinaryProjectionStage implements BinaryPipelineSta
     protected abstract NormalizationStrategy getNormalizationStrategy();
 
     /**
-     * Get the consolidation function to use for normalization.
+     * Get the consolidation strategy to use for normalization.
      *
-     * @return The consolidation function (defaults to AVG)
+     * @return The consolidation strategy (defaults to AVG)
      */
-    protected ConsolidationFunction getConsolidationFunction() {
-        return ConsolidationFunction.getDefault();
+    protected TimeSeriesNormalizer.ConsolidationStrategy getConsolidationStrategy() {
+        return TimeSeriesNormalizer.ConsolidationStrategy.AVG;
     }
 
     /**
@@ -248,7 +247,11 @@ public abstract class AbstractBinaryProjectionStage implements BinaryPipelineSta
             allSeries.add(rightSeries);
 
             // Normalize all together
-            List<TimeSeries> normalized = TimeSeriesNormalizer.normalize(allSeries, getConsolidationFunction());
+            List<TimeSeries> normalized = TimeSeriesNormalizer.normalize(
+                allSeries,
+                TimeSeriesNormalizer.StepSizeStrategy.LCM,
+                getConsolidationStrategy()
+            );
 
             // Last normalized series is the right series
             TimeSeries normalizedRight = normalized.getLast();
@@ -274,7 +277,8 @@ public abstract class AbstractBinaryProjectionStage implements BinaryPipelineSta
                 if (getNormalizationStrategy() == NormalizationStrategy.PAIRWISE) {
                     List<TimeSeries> normalized = TimeSeriesNormalizer.normalize(
                         List.of(leftSeries, rightSeries),
-                        getConsolidationFunction()
+                        TimeSeriesNormalizer.StepSizeStrategy.LCM,
+                        getConsolidationStrategy()
                     );
                     processedSeries = alignTimestampsAndProcess(normalized.get(0), normalized.get(1));
                 } else {

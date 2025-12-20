@@ -78,7 +78,11 @@ public class TimeSeriesNormalizerTests extends OpenSearchTestCase {
         // Note: numSteps = (48000 - 0) / 24000 + 1 = 3, creating 3 buckets
 
         // Test SUM consolidation
-        List<TimeSeries> resultSum = TimeSeriesNormalizer.normalize(inputSeries, ConsolidationFunction.SUM);
+        List<TimeSeries> resultSum = TimeSeriesNormalizer.normalize(
+            inputSeries,
+            TimeSeriesNormalizer.StepSizeStrategy.LCM,
+            TimeSeriesNormalizer.ConsolidationStrategy.SUM
+        );
         assertEquals(3, resultSum.size());
 
         // Verify metadata preservation
@@ -179,25 +183,41 @@ public class TimeSeriesNormalizerTests extends OpenSearchTestCase {
         assertSamplesEqual("Series C SUM consolidation", expectedC_SUM, resultSum.get(2).getSamples());
 
         // Test AVG consolidation
-        List<TimeSeries> resultAvg = TimeSeriesNormalizer.normalize(inputSeries, ConsolidationFunction.AVG);
+        List<TimeSeries> resultAvg = TimeSeriesNormalizer.normalize(
+            inputSeries,
+            TimeSeriesNormalizer.StepSizeStrategy.LCM,
+            TimeSeriesNormalizer.ConsolidationStrategy.AVG
+        );
         assertSamplesEqual("Series A AVG consolidation", expectedA_AVG, resultAvg.get(0).getSamples());
         assertSamplesEqual("Series B AVG consolidation", expectedB_AVG, resultAvg.get(1).getSamples());
         assertSamplesEqual("Series C AVG consolidation", expectedC_AVG, resultAvg.get(2).getSamples());
 
         // Test MAX consolidation
-        List<TimeSeries> resultMax = TimeSeriesNormalizer.normalize(inputSeries, ConsolidationFunction.MAX);
+        List<TimeSeries> resultMax = TimeSeriesNormalizer.normalize(
+            inputSeries,
+            TimeSeriesNormalizer.StepSizeStrategy.LCM,
+            TimeSeriesNormalizer.ConsolidationStrategy.MAX
+        );
         assertSamplesEqual("Series A MAX consolidation", expectedA_MAX, resultMax.get(0).getSamples());
         assertSamplesEqual("Series B MAX consolidation", expectedB_MAX, resultMax.get(1).getSamples());
         assertSamplesEqual("Series C MAX consolidation", expectedC_MAX, resultMax.get(2).getSamples());
 
         // Test MIN consolidation
-        List<TimeSeries> resultMin = TimeSeriesNormalizer.normalize(inputSeries, ConsolidationFunction.MIN);
+        List<TimeSeries> resultMin = TimeSeriesNormalizer.normalize(
+            inputSeries,
+            TimeSeriesNormalizer.StepSizeStrategy.LCM,
+            TimeSeriesNormalizer.ConsolidationStrategy.MIN
+        );
         assertSamplesEqual("Series A MIN consolidation", expectedA_MIN, resultMin.get(0).getSamples());
         assertSamplesEqual("Series B MIN consolidation", expectedB_MIN, resultMin.get(1).getSamples());
         assertSamplesEqual("Series C MIN consolidation", expectedC_MIN, resultMin.get(2).getSamples());
 
         // Test LAST consolidation
-        List<TimeSeries> resultLast = TimeSeriesNormalizer.normalize(inputSeries, ConsolidationFunction.LAST);
+        List<TimeSeries> resultLast = TimeSeriesNormalizer.normalize(
+            inputSeries,
+            TimeSeriesNormalizer.StepSizeStrategy.LCM,
+            TimeSeriesNormalizer.ConsolidationStrategy.LAST
+        );
         assertSamplesEqual("Series A LAST consolidation", expectedA_LAST, resultLast.get(0).getSamples());
         assertSamplesEqual("Series B LAST consolidation", expectedB_LAST, resultLast.get(1).getSamples());
         assertSamplesEqual("Series C LAST consolidation", expectedC_LAST, resultLast.get(2).getSamples());
@@ -281,5 +301,66 @@ public class TimeSeriesNormalizerTests extends OpenSearchTestCase {
 
     public void testConsolidationFunction_GetDefault() {
         assertEquals(ConsolidationFunction.AVG, ConsolidationFunction.getDefault());
+    }
+
+    public void testNormalize_TypeAware_CounterType() {
+        // Test TYPE_AWARE strategy with all types: counter, counts, and no type label
+        // Counter series: type="counter" - should use SUM
+        List<Sample> counterSamples = List.of(new FloatSample(0L, 10.0f), new FloatSample(5000L, 20.0f), new FloatSample(10000L, 30.0f));
+        Labels counterLabels = ByteLabels.fromMap(Map.of("type", "counter", "metric", "requests"));
+        TimeSeries counterSeries = new TimeSeries(counterSamples, counterLabels, 0L, 10000L, 5000L, null);
+
+        // Counts series: type="counts" - should use SUM
+        List<Sample> countsSamples = List.of(new FloatSample(0L, 15.0f), new FloatSample(5000L, 25.0f), new FloatSample(10000L, 35.0f));
+        Labels countsLabels = ByteLabels.fromMap(Map.of("type", "counts", "metric", "events"));
+        TimeSeries countsSeries = new TimeSeries(countsSamples, countsLabels, 0L, 10000L, 5000L, null);
+
+        // No type series: no type label - should use AVG
+        List<Sample> noTypeSamples = List.of(new FloatSample(0L, 5.0f), new FloatSample(5000L, 10.0f), new FloatSample(10000L, 15.0f));
+        Labels noTypeLabels = ByteLabels.fromMap(Map.of("metric", "cpu"));
+        TimeSeries noTypeSeries = new TimeSeries(noTypeSamples, noTypeLabels, 0L, 10000L, 5000L, null);
+
+        // Add a series with larger step size to trigger rebucketing
+        // This series has step 10000L, so MAX(5000, 5000, 5000, 10000) = 10000L
+        List<Sample> triggerSamples = List.of(new FloatSample(0L, 100.0f), new FloatSample(10000L, 200.0f));
+        Labels triggerLabels = ByteLabels.fromMap(Map.of("metric", "memory"));
+        TimeSeries triggerSeries = new TimeSeries(triggerSamples, triggerLabels, 0L, 10000L, 10000L, null);
+
+        List<TimeSeries> result = TimeSeriesNormalizer.normalize(
+            List.of(counterSeries, countsSeries, noTypeSeries, triggerSeries),
+            TimeSeriesNormalizer.StepSizeStrategy.MAX,
+            TimeSeriesNormalizer.ConsolidationStrategy.TYPE_AWARE
+        );
+
+        // With MAX step size (10000L), samples are rebucketed:
+        // Bucket [0, 10000): samples at 0L and 5000L
+        // Bucket [10000, 20000): sample at 10000L
+        // Counter series should use SUM: bucket [0, 10000) contains samples 10, 20 → sum = 30
+        List<Sample> expectedCounter = List.of(
+            new FloatSample(0L, 30.0f),      // sum(10, 20) = 30
+            new FloatSample(10000L, 30.0f)   // sum(30) = 30
+        );
+        assertSamplesEqual("Counter series TYPE_AWARE", expectedCounter, result.get(0).getSamples(), 0.001f);
+
+        // Counts series should use SUM: bucket [0, 10000) contains samples 15, 25 → sum = 40
+        List<Sample> expectedCounts = List.of(
+            new FloatSample(0L, 40.0f),      // sum(15, 25) = 40
+            new FloatSample(10000L, 35.0f)   // sum(35) = 35
+        );
+        assertSamplesEqual("Counts series TYPE_AWARE", expectedCounts, result.get(1).getSamples(), 0.001f);
+
+        // No type series should use AVG: bucket [0, 10000) contains samples 5, 10 → avg = 7.5
+        List<Sample> expectedNoType = List.of(
+            new FloatSample(0L, 7.5f),      // avg(5, 10) = 7.5
+            new FloatSample(10000L, 15.0f)   // avg(15) = 15
+        );
+        assertSamplesEqual("No type series TYPE_AWARE", expectedNoType, result.get(2).getSamples(), 0.001f);
+
+        // Trigger series (no type label) should use AVG: bucket [0, 10000) contains sample 100 → avg = 100
+        List<Sample> expectedTrigger = List.of(
+            new FloatSample(0L, 100.0f),    // avg(100) = 100
+            new FloatSample(10000L, 200.0f) // avg(200) = 200
+        );
+        assertSamplesEqual("Trigger series TYPE_AWARE", expectedTrigger, result.get(3).getSamples(), 0.001f);
     }
 }
