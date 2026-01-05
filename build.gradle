@@ -28,7 +28,12 @@ buildscript {
     }
     repositories {
         mavenLocal()
-        maven { url "https://ci.opensearch.org/ci/dbc/snapshots/maven/" }
+        maven {
+            url "https://ci.opensearch.org/ci/dbc/snapshots/maven/"
+            content {
+                excludeGroupByRegex "com\\.fasterxml\\.jackson.*"
+            }
+        }
         mavenCentral()
         maven { url "https://plugins.gradle.org/m2/" }
     }
@@ -56,7 +61,12 @@ allprojects {
 
 repositories {
     mavenLocal()
-    maven { url "https://ci.opensearch.org/ci/dbc/snapshots/maven/" }
+    maven {
+        url "https://ci.opensearch.org/ci/dbc/snapshots/maven/"
+        content {
+            excludeGroupByRegex "com\\.fasterxml\\.jackson.*"
+        }
+    }
     mavenCentral()
     maven { url "https://plugins.gradle.org/m2/" }
 }
@@ -303,22 +313,23 @@ dependencies {
     implementation 'com.google.re2j:re2j:1.7'
 
     // Jackson dependencies for YAML and JSON processing in test framework
-    testImplementation 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
-    testImplementation 'com.fasterxml.jackson.core:jackson-annotations:2.18.2'
-    testImplementation 'com.fasterxml.jackson.core:jackson-core:2.18.2'
-    testImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.18.2'
+    testImplementation 'com.fasterxml.jackson.core:jackson-databind:2.20.1'
+    testImplementation 'com.fasterxml.jackson.core:jackson-annotations:2.20'
+    testImplementation 'com.fasterxml.jackson.core:jackson-core:2.20.1'
+    testImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.20.1'
 
     // javaRestTest dependencies
-    javaRestTestImplementation 'com.fasterxml.jackson.core:jackson-core:2.18.2'
-    javaRestTestImplementation 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
-    javaRestTestImplementation 'com.fasterxml.jackson.core:jackson-annotations:2.18.2'
-    javaRestTestImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.18.2'
+    javaRestTestImplementation 'com.fasterxml.jackson.core:jackson-core:2.20.1'
+    javaRestTestImplementation 'com.fasterxml.jackson.core:jackson-databind:2.20.1'
+    javaRestTestImplementation 'com.fasterxml.jackson.core:jackson-annotations:2.20'
+    javaRestTestImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.20.1'
 
     // internalClusterTest dependencies
-    internalClusterTestImplementation 'com.fasterxml.jackson.core:jackson-core:2.18.2'
-    internalClusterTestImplementation 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
-    internalClusterTestImplementation 'com.fasterxml.jackson.core:jackson-annotations:2.18.2'
-    internalClusterTestImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.18.2'
+    internalClusterTestImplementation 'com.fasterxml.jackson.core:jackson-core:2.20.1'
+    internalClusterTestImplementation 'com.fasterxml.jackson.core:jackson-databind:2.20.1'
+    internalClusterTestImplementation 'com.fasterxml.jackson.core:jackson-annotations:2.20'
+    internalClusterTestImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.20.1'
+
 }
 
 tasks.register("cleanJavaCCGenerated", Delete) {
