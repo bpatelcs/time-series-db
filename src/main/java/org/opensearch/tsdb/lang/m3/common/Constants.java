@@ -58,7 +58,6 @@ public class Constants {
             "divideWhen",
             "execute",
             "exec",
-            "head",
             "histogramCDF",
             "integral",
             "jainCP",
@@ -136,6 +135,11 @@ public class Constants {
          * fetch function name.
          */
         public static final String FETCH = "fetch";
+
+        /**
+         * head function name.
+         */
+        public static final String HEAD = "head";
 
         /**
          * histogramPercentile function name.

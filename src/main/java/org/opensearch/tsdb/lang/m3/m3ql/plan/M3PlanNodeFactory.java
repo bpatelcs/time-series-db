@@ -18,6 +18,7 @@ import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.ExcludeByTagPlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.FallbackSeriesConstantPlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.ValueFilterPlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.FetchPlanNode;
+import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.HeadPlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.HistogramPercentilePlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.IsNonNullPlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.KeepLastValuePlanNode;
@@ -71,6 +72,8 @@ public class M3PlanNodeFactory {
                 return FallbackSeriesConstantPlanNode.of(functionNode);
             case Constants.Functions.FETCH:
                 return FetchPlanNode.of(functionNode);
+            case Constants.Functions.HEAD:
+                return HeadPlanNode.of(functionNode);
             case Constants.Functions.HISTOGRAM_PERCENTILE:
                 return HistogramPercentilePlanNode.of(functionNode);
             case Constants.Functions.IS_NON_NULL:

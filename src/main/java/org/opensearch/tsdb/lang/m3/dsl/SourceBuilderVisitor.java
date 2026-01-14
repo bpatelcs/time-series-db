@@ -50,6 +50,7 @@ import org.opensearch.tsdb.lang.m3.stage.IsNonNullStage;
 import org.opensearch.tsdb.lang.m3.stage.RemoveEmptyStage;
 import org.opensearch.tsdb.lang.m3.stage.ScaleStage;
 import org.opensearch.tsdb.lang.m3.stage.ScaleToSecondsStage;
+import org.opensearch.tsdb.lang.m3.stage.HeadStage;
 import org.opensearch.tsdb.lang.m3.stage.ShowTagsStage;
 import org.opensearch.tsdb.lang.m3.stage.SortStage;
 import org.opensearch.tsdb.lang.m3.stage.SustainStage;
@@ -68,6 +69,7 @@ import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.AliasPlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.BinaryPlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.FallbackSeriesConstantPlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.FetchPlanNode;
+import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.HeadPlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.HistogramPercentilePlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.KeepLastValuePlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.M3PlanNode;
@@ -494,6 +496,17 @@ public class SourceBuilderVisitor extends M3PlanVisitor<SourceBuilderVisitor.Com
             planNode.getTags()
         );
         stageStack.add(stage);
+
+        return planNode.getChildren().getFirst().accept(this);
+    }
+
+    @Override
+    public ComponentHolder visit(HeadPlanNode planNode) {
+        validateChildCountExact(planNode, 1);
+
+        // HeadStage is a coordinator-only stage
+        HeadStage headStage = new HeadStage(planNode.getLimit());
+        stageStack.add(headStage);
 
         return planNode.getChildren().getFirst().accept(this);
     }

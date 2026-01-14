@@ -19,6 +19,7 @@ import org.opensearch.tsdb.lang.m3.stage.CountStage;
 import org.opensearch.tsdb.lang.m3.stage.CopyStage;
 import org.opensearch.tsdb.lang.m3.stage.DivideStage;
 import org.opensearch.tsdb.lang.m3.stage.FallbackSeriesUnaryStage;
+import org.opensearch.tsdb.lang.m3.stage.HeadStage;
 import org.opensearch.tsdb.lang.m3.stage.HistogramPercentileStage;
 import org.opensearch.tsdb.lang.m3.stage.IntersectStage;
 import org.opensearch.tsdb.lang.m3.stage.IsNonNullStage;
@@ -120,6 +121,7 @@ public class PipelineStageFactory {
             registerStage(ExcludeByTagStage.class);
             registerStage(FallbackSeriesBinaryStage.class);
             registerStage(FallbackSeriesUnaryStage.class);
+            registerStage(HeadStage.class);
             registerStage(HistogramPercentileStage.class);
             registerStage(IntersectStage.class);
             registerStage(IsNonNullStage.class);

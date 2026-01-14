@@ -29,6 +29,7 @@ import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.ExcludeByTagPlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.FallbackSeriesBinaryPlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.FallbackSeriesConstantPlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.FetchPlanNode;
+import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.HeadPlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.HistogramPercentilePlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.IsNonNullPlanNode;
 import org.opensearch.tsdb.lang.m3.m3ql.plan.nodes.KeepLastValuePlanNode;
@@ -513,6 +514,27 @@ public class SourceBuilderVisitorTests extends OpenSearchTestCase {
 
         IllegalStateException exception = expectThrows(IllegalStateException.class, () -> visitor.visit(planNode));
         assertEquals("SortPlanNode must have exactly one child", exception.getMessage());
+    }
+
+    /**
+     * Test HeadPlanNode with correct number of children (1).
+     */
+    public void testHeadPlanNodeWithOneChild() {
+        HeadPlanNode planNode = new HeadPlanNode(1, 5);
+        planNode.addChild(createMockFetchNode(2));
+
+        // Should not throw an exception
+        assertNotNull(visitor.visit(planNode));
+    }
+
+    /**
+     * Test HeadPlanNode with incorrect number of children (0).
+     */
+    public void testHeadPlanNodeWithNoChildren() {
+        HeadPlanNode planNode = new HeadPlanNode(1, 10);
+
+        IllegalStateException exception = expectThrows(IllegalStateException.class, () -> visitor.visit(planNode));
+        assertEquals("HeadPlanNode must have exactly one child", exception.getMessage());
     }
 
     /**
