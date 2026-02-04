@@ -259,7 +259,7 @@ public class ClosedChunkIndexManager implements Closeable {
             } catch (Exception e) {
                 log.error("Failed to record index size metric", e);
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             log.error("Failed to run optimization cycle", e);
         }
         log.info("Optimization cycle completed");
