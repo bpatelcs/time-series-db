@@ -53,11 +53,9 @@ public class Constants {
             "burnRateMultiplier",
             "changed",
             "constantLine",
-            "divideScalar",
             "divideWhen",
             "histogramCDF",
             "jainCP",
-            "logarithm",
             "mapKey",
             "mockFetch",
             "mockFetchLine",
@@ -66,18 +64,14 @@ public class Constants {
             "multiBurnRate",
             "nonNegativeDerivative",
             "nPercentile",
-            "offset",
             "promHistogramPercentile",
             "range",
             "rangeOfSeries",
             "removeAbovePercentile",
             "removeBelowPercentile",
-            "round",
             "setDiff",
             "showAnomalyThresholds",
             "stdev",
-            "sqrt",
-            "squareRoot",
             "sustainedAbove",
             "sustainedBelow",
             "switch",
@@ -264,6 +258,41 @@ public class Constants {
          * transformNull function name.
          */
         public static final String TRANSFORM_NULL = "transformNull";
+
+        /**
+         * logarithm function name.
+         */
+        public static final String LOGARITHM = "logarithm";
+
+        /**
+         * log function alias for logarithm.
+         */
+        public static final String LOG = "log";
+
+        /**
+         * sqrt function name.
+         */
+        public static final String SQRT = "sqrt";
+
+        /**
+         * squareRoot function name (alias for sqrt).
+         */
+        public static final String SQUARE_ROOT = "squareRoot";
+
+        /**
+         * offset function name.
+         */
+        public static final String OFFSET = "offset";
+
+        /**
+         * divideScalar function name.
+         */
+        public static final String DIVIDE_SCALAR = "divideScalar";
+
+        /**
+         * round function name.
+         */
+        public static final String ROUND = "round";
 
         /**
          * Functions used for value comparison.
