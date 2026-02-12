@@ -9,7 +9,6 @@ package org.opensearch.tsdb;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.opensearch.threadpool.ScalingExecutorBuilder;
 import org.opensearch.transport.client.Client;
 import org.opensearch.cluster.service.ClusterService;
 import org.apache.lucene.store.Directory;
