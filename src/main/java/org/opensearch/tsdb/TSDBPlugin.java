@@ -9,6 +9,7 @@ package org.opensearch.tsdb;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.threadpool.ScalingExecutorBuilder;
 import org.opensearch.transport.client.Client;
 import org.opensearch.cluster.service.ClusterService;
 import org.apache.lucene.store.Directory;
@@ -825,7 +826,7 @@ public class TSDBPlugin extends Plugin implements SearchPlugin, EnginePlugin, Ac
             settings,
             MGMT_THREAD_POOL_NAME,
             1,
-            1,
+            100,
             "index.tsdb_engine.thread_pool." + MGMT_THREAD_POOL_NAME
         );
         return List.of(executorBuilder);
