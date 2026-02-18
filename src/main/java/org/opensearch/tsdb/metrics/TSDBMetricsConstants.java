@@ -58,7 +58,7 @@ public final class TSDBMetricsConstants {
     public static final String MEMCHUNKS_MINSEQ = "tsdb.memchunks.minseq";
 
     /** Gauge: Current number of open in-memory chunks */
-    public static final String MEMCHUNKS_OPEN_GAUGE = "tsdb.memchunks.open.gauge";
+    public static final String MEMCHUNKS_OPEN_GAUGE = "tsdb.memchunks.open.total";
 
     /** Histogram: Size histogram (bytes) of closed chunks */
     public static final String CLOSEDCHUNKS_SIZE = "tsdb.closedchunks.size";
