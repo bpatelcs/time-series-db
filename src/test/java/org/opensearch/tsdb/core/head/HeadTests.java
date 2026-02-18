@@ -561,6 +561,155 @@ public class HeadTests extends OpenSearchTestCase {
         closedChunkIndexManager.close();
     }
 
+    public void testGetNumOpenChunksEmpty() throws IOException {
+        ShardId shardId = new ShardId("headTest", "headTestUid", 0);
+        ClosedChunkIndexManager closedChunkIndexManager = new ClosedChunkIndexManager(
+            createTempDir("testGetNumOpenChunksEmpty"),
+            new InMemoryMetadataStore(),
+            new NOOPRetention(),
+            new NoopCompaction(),
+            threadPool,
+            shardId,
+            defaultSettings
+        );
+        Head head = new Head(createTempDir("testGetNumOpenChunksEmpty"), shardId, closedChunkIndexManager, defaultSettings);
+
+        // Empty head should have 0 open chunks
+        assertEquals("Empty head should have 0 open chunks", 0L, head.getNumOpenChunks());
+
+        head.close();
+        closedChunkIndexManager.close();
+    }
+
+    public void testGetNumOpenChunksBasicCounting() throws IOException, InterruptedException {
+        ShardId shardId = new ShardId("headTest", "headTestUid", 0);
+        ClosedChunkIndexManager closedChunkIndexManager = new ClosedChunkIndexManager(
+            createTempDir("testGetNumOpenChunksBasicCounting"),
+            new InMemoryMetadataStore(),
+            new NOOPRetention(),
+            new NoopCompaction(),
+            threadPool,
+            shardId,
+            defaultSettings
+        );
+        Head head = new Head(createTempDir("testGetNumOpenChunksBasicCounting"), shardId, closedChunkIndexManager, defaultSettings);
+
+        long seqNo = 0;
+
+        // Create 3 series with 1 chunk each
+        for (int i = 0; i < 3; i++) {
+            Labels labels = ByteLabels.fromStrings("series", String.valueOf(i));
+            appendSampleWithSeqNo(head, labels, 1000L, 1.0, seqNo++);
+        }
+
+        assertEquals("Should have 3 open chunks (1 per series)", 3L, head.getNumOpenChunks());
+
+        head.close();
+        closedChunkIndexManager.close();
+    }
+
+    public void testGetNumOpenChunksMultipleChunksPerSeries() throws IOException, InterruptedException {
+        ShardId shardId = new ShardId("headTest", "headTestUid", 0);
+        ClosedChunkIndexManager closedChunkIndexManager = new ClosedChunkIndexManager(
+            createTempDir("testGetNumOpenChunksMultipleChunksPerSeries"),
+            new InMemoryMetadataStore(),
+            new NOOPRetention(),
+            new NoopCompaction(),
+            threadPool,
+            shardId,
+            defaultSettings
+        );
+        Head head = new Head(
+            createTempDir("testGetNumOpenChunksMultipleChunksPerSeries"),
+            shardId,
+            closedChunkIndexManager,
+            defaultSettings
+        );
+
+        long seqNo = 0;
+        Labels labels = ByteLabels.fromStrings("metric", "test");
+
+        // Create multiple chunks for the same series by spanning chunk duration
+        // Chunk duration is 8000ms (8 seconds) from defaultSettings
+        appendSampleWithSeqNo(head, labels, 1000L, 1.0, seqNo++);   // First chunk
+        appendSampleWithSeqNo(head, labels, 10000L, 2.0, seqNo++);  // Second chunk
+        appendSampleWithSeqNo(head, labels, 20000L, 3.0, seqNo++);  // Third chunk
+
+        assertEquals("Should have 3 open chunks in one series", 3L, head.getNumOpenChunks());
+
+        head.close();
+        closedChunkIndexManager.close();
+    }
+
+    public void testGetNumOpenChunksExcludesClosedChunks() throws IOException, InterruptedException {
+        ShardId shardId = new ShardId("headTest", "headTestUid", 0);
+        ClosedChunkIndexManager closedChunkIndexManager = new ClosedChunkIndexManager(
+            createTempDir("testGetNumOpenChunksExcludesClosedChunks"),
+            new InMemoryMetadataStore(),
+            new NOOPRetention(),
+            new NoopCompaction(),
+            threadPool,
+            shardId,
+            defaultSettings
+        );
+        Head head = new Head(createTempDir("testGetNumOpenChunksExcludesClosedChunks"), shardId, closedChunkIndexManager, defaultSettings);
+
+        long seqNo = 0;
+
+        // Create 5 series with samples
+        for (int i = 0; i < 5; i++) {
+            Labels labels = ByteLabels.fromStrings("series", String.valueOf(i));
+            appendSampleWithSeqNo(head, labels, 1000L, 1.0, seqNo++);
+        }
+
+        assertEquals("Should have 5 open chunks initially", 5L, head.getNumOpenChunks());
+
+        // Make chunks closeable by advancing time beyond chunk range
+        head.updateMaxSeenTimestamp(20000L);
+
+        // Close all eligible chunks (100%)
+        Head.IndexChunksResult result = head.closeHeadChunks(true, 100);
+        assertEquals("Should have closed all 5 chunks", 5, result.numClosedChunks());
+        assertEquals("All chunks should be closed now", 0L, head.getNumOpenChunks());
+
+        head.close();
+        closedChunkIndexManager.close();
+    }
+
+    public void testGetNumOpenChunksMixedOpenAndClosed() throws IOException, InterruptedException {
+        ShardId shardId = new ShardId("headTest", "headTestUid", 0);
+        ClosedChunkIndexManager closedChunkIndexManager = new ClosedChunkIndexManager(
+            createTempDir("testGetNumOpenChunksMixedOpenAndClosed"),
+            new InMemoryMetadataStore(),
+            new NOOPRetention(),
+            new NoopCompaction(),
+            threadPool,
+            shardId,
+            defaultSettings
+        );
+        Head head = new Head(createTempDir("testGetNumOpenChunksMixedOpenAndClosed"), shardId, closedChunkIndexManager, defaultSettings);
+
+        long seqNo = 0;
+
+        // Create a series with multiple chunks
+        Labels labels = ByteLabels.fromStrings("metric", "mixed");
+        appendSampleWithSeqNo(head, labels, 1000L, 1.0, seqNo++);   // Old chunk - will be closed
+        appendSampleWithSeqNo(head, labels, 10000L, 2.0, seqNo++);  // Newer chunk - will be closed
+        appendSampleWithSeqNo(head, labels, 30000L, 3.0, seqNo++);  // Recent chunk - will remain open
+
+        assertEquals("Should have 3 open chunks initially", 3L, head.getNumOpenChunks());
+
+        // Close older chunks (before 25000ms)
+        head.updateMaxSeenTimestamp(30000L);
+        head.closeHeadChunks(true, 25000);
+
+        // Only the most recent chunk should remain open
+        assertEquals("Should have 1 open chunk after closing old chunks", 1L, head.getNumOpenChunks());
+
+        head.close();
+        closedChunkIndexManager.close();
+    }
+
     public void testGetOrCreateSeriesConcurrent() throws Exception {
         ShardId shardId = new ShardId("headTest", "headTestUid", 0);
         Path metricsPath = createTempDir("testGetOrCreateSeriesConcurrent");

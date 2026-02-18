@@ -673,6 +673,35 @@ public class Head implements Closeable {
     }
 
     /**
+     * Get the total count of open (not yet closed) memory chunks across all series.
+     * Made public to support pull-based gauge metrics.
+     *
+     * An open chunk is one where isClosed() returns false. Chunks remain open
+     * while accepting new samples within their time range, and get closed when
+     * their maxTimestamp falls before the cutoff timestamp during flush operations.
+     *
+     * @return count of open chunks, or 0 if no series exist
+     */
+    public long getNumOpenChunks() {
+        long count = 0;
+        for (MemSeries series : seriesMap.getSeriesMap()) {
+            series.lock();
+            try {
+                MemChunk current = series.getHeadChunk();
+                while (current != null) {
+                    if (!current.isClosed()) {
+                        count++;
+                    }
+                    current = current.getPrev();
+                }
+            } finally {
+                series.unlock();
+            }
+        }
+        return count;
+    }
+
+    /**
      * Closes the head, flushing any pending writes to disk and writing a snapshot of the head state. Assumes that writes have stopped
      * before this is called.
      *
