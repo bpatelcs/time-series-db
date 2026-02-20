@@ -51,14 +51,11 @@ public final class TSDBMetricsConstants {
     /** Histogram: Current number of open series in head (recorded on flush) */
     public static final String SERIES_OPEN = "tsdb.series.open";
 
-    /** Histogram: Current number of open in-memory chunks in head (recorded on flush) */
+    /** Histogram: Current number of open in-memory chunks in head */
     public static final String MEMCHUNKS_OPEN = "tsdb.memchunks.open";
 
     /** Histogram: Minimum sequence number among open in-memory chunks (recorded on flush) */
     public static final String MEMCHUNKS_MINSEQ = "tsdb.memchunks.minseq";
-
-    /** Gauge: Current number of open in-memory chunks */
-    public static final String MEMCHUNKS_OPEN_GAUGE = "tsdb.memchunks.open.total";
 
     /** Histogram: Size histogram (bytes) of closed chunks */
     public static final String CLOSEDCHUNKS_SIZE = "tsdb.closedchunks.size";
@@ -259,9 +256,8 @@ public final class TSDBMetricsConstants {
 
     // Engine Metrics - Snapshots
     public static final String SERIES_OPEN_DESC = "Current number of open series in head (recorded on flush)";
-    public static final String MEMCHUNKS_OPEN_DESC = "Current number of open in-memory chunks in head (recorded on flush)";
+    public static final String MEMCHUNKS_OPEN_DESC = "Current number of open in-memory chunks in head";
     public static final String MEMCHUNKS_MINSEQ_DESC = "Minimum sequence number among open in-memory chunks (recorded on flush)";
-    public static final String MEMCHUNKS_OPEN_GAUGE_DESC = "Current number of open (not yet closed) in-memory chunks in head";
     public static final String CLOSEDCHUNKS_SIZE_DESC = "Size histogram (bytes) of closed chunks persisted to disk";
     public static final String FLUSH_LATENCY_DESC = "Latency of flush operation";
     public static final String INDEX_LATENCY_DESC = "Latency of index operation";

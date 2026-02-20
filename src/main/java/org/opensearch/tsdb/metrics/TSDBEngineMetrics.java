@@ -232,8 +232,8 @@ public class TSDBEngineMetrics {
         );
 
         memChunksOpenGauge = registry.createGauge(
-            TSDBMetricsConstants.MEMCHUNKS_OPEN_GAUGE,
-            TSDBMetricsConstants.MEMCHUNKS_OPEN_GAUGE_DESC,
+            TSDBMetricsConstants.MEMCHUNKS_OPEN,
+            TSDBMetricsConstants.MEMCHUNKS_OPEN_DESC,
             TSDBMetricsConstants.UNIT_COUNT,
             openChunksCountSupplier,
             tags

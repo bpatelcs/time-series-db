@@ -157,8 +157,8 @@ public class TSDBEngineMetricsTests extends OpenSearchTestCase {
         );
 
         verify(registry).createGauge(
-            eq(TSDBMetricsConstants.MEMCHUNKS_OPEN_GAUGE),
-            eq(TSDBMetricsConstants.MEMCHUNKS_OPEN_GAUGE_DESC),
+            eq(TSDBMetricsConstants.MEMCHUNKS_OPEN),
+            eq(TSDBMetricsConstants.MEMCHUNKS_OPEN_DESC),
             eq(TSDBMetricsConstants.UNIT_COUNT),
             eq(openChunksSupplier),
             eq(tags)
