@@ -273,6 +273,7 @@ public class HeadTests extends OpenSearchTestCase {
         Head.IndexChunksResult indexChunksResult = head.closeHeadChunks(true, 100);
 
         assertEquals("7 samples were MMAPed, replay from minSeqNo + 1", 6, getMinSeqNoToKeep(indexChunksResult.minSeqNo()));
+        var openChunks = head.getNumOpenChunks();
         head.close();
         closedChunkIndexManager.close();
 
@@ -286,7 +287,6 @@ public class HeadTests extends OpenSearchTestCase {
             defaultSettings
         );
         Head newHead = new Head(headPath, new ShardId("headTest", "headTestUid", 0), newClosedChunkIndexManager, defaultSettings);
-
         // MemSeries are correctly loaded and updated from commit data
         assertEquals(series1, newHead.getSeriesMap().getByReference(series1Reference).getLabels());
         assertEquals(8000, newHead.getSeriesMap().getByReference(series1Reference).getMaxMMapTimestamp());
@@ -308,7 +308,7 @@ public class HeadTests extends OpenSearchTestCase {
             assertTrue("Previously in-memory sample for seqNo " + i + " is appended", appender1.append(() -> {}, () -> {}));
             i++;
         }
-
+        assertEquals(openChunks, newHead.getNumOpenChunks());
         newHead.close();
         newClosedChunkIndexManager.close();
     }

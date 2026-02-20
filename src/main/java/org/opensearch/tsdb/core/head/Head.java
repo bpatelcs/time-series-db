@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Head storage implementation for active time series data.
@@ -66,6 +67,32 @@ public class Head implements Closeable {
     // This will be used to track when a new chunk boundary is crossed to determine total closeable chunks.
     private volatile long lastProcessedChunkBoundary = 0;
     private volatile int cachedChunksToProcess = 0;
+
+    // Counters to track chunk activities.
+    private final AtomicLong createdChunksCount = new AtomicLong(0);
+    private final AtomicLong closedChunksCount = new AtomicLong(0);
+
+    /**
+     * Singleton event listener implementation for tracking chunk lifecycle events.
+     */
+    private final SeriesEventListener eventListener = new SeriesEventListener() {
+        @Override
+        public void onChunksCreated(long count) {
+            TSDBMetrics.incrementCounter(TSDBMetrics.ENGINE.memChunksCreated, count);
+            createdChunksCount.addAndGet(count);
+        }
+
+        @Override
+        public void onChunksClosed(long count) {
+            TSDBMetrics.incrementCounter(TSDBMetrics.ENGINE.memChunksClosedTotal, count, metricTags);
+            closedChunksCount.addAndGet(count);
+        }
+
+        @Override
+        public void onChunksExpired(long count) {
+            TSDBMetrics.incrementCounter(TSDBMetrics.ENGINE.memChunksExpiredTotal, count);
+        }
+    };
 
     /**
      * Constructs a new Head instance.
@@ -186,7 +213,7 @@ public class Head implements Closeable {
         }
 
         // Create new series (stub if no labels, normal if has labels)
-        MemSeries newSeries = hasLabels ? new MemSeries(hash, labels) : new MemSeries(hash, null, true);
+        MemSeries newSeries = hasLabels ? new MemSeries(hash, labels, eventListener) : new MemSeries(hash, null, true, eventListener);
         MemSeries actualSeries = seriesMap.putIfAbsent(newSeries);
         boolean isNewSeriesCreated = actualSeries == newSeries;
 
@@ -367,8 +394,6 @@ public class Head implements Closeable {
             closedSeries = dropEmptySeries(indexChunksResult.minSeqNo());
         }
 
-        // Record push-based counters (pull-based gauges registered separately via TSDBEngine.registerHeadGauges)
-        TSDBMetrics.incrementCounter(TSDBMetrics.ENGINE.memChunksClosedTotal, indexChunksResult.numClosedChunks(), metricTags);
         if (closedSeries > 0) {
             TSDBMetrics.incrementCounter(TSDBMetrics.ENGINE.seriesClosedTotal, closedSeries, metricTags);
         }
@@ -562,6 +587,8 @@ public class Head implements Closeable {
                 totalClosedChunks++;
             } catch (IOException e) {
                 throw new RuntimeException(e);
+            } finally {
+                eventListener.onChunksClosed(totalClosedChunks);
             }
         }
 
@@ -673,26 +700,12 @@ public class Head implements Closeable {
     }
 
     /**
-     * Get the total count of open (not yet flushed) memory chunks across all series.
-     * Made public to support pull-based gauge metrics.
+     * Get the total count of open (not yet closed) memory chunks across all series.
      *
      * @return count of open chunks, or 0 if no series exist
      */
     public long getNumOpenChunks() {
-        long count = 0;
-        for (MemSeries series : seriesMap.getSeriesMap()) {
-            series.lock();
-            try {
-                MemChunk current = series.getHeadChunk();
-                while (current != null) {
-                    count++;
-                    current = current.getPrev();
-                }
-            } finally {
-                series.unlock();
-            }
-        }
-        return count;
+        return Math.max(0, createdChunksCount.get() - closedChunksCount.get());
     }
 
     /**
@@ -706,7 +719,7 @@ public class Head implements Closeable {
     }
 
     private void loadSeries() {
-        liveSeriesIndex.loadSeriesFromIndex(new HeadSeriesLoader());
+        liveSeriesIndex.loadSeriesFromIndex(new HeadSeriesLoader(), eventListener);
         log.info("Loaded {} series into head", getNumSeries());
 
         liveSeriesIndex.updateSeriesFromCommitData(new SeqNoUpdater());
